@@ -53,26 +53,7 @@ router.get('/featured', async (req, res, next) => {
   }
 });
 
-// Get single property
-router.get('/:id', async (req, res, next) => {
-  try {
-    const property = await Property.findById(req.params.id)
-      .populate('listedBy', 'firstName lastName email phoneNumber')
-      .populate('agent', 'firstName lastName email phoneNumber');
 
-    if (!property) {
-      return res.status(404).json({ success: false, message: 'Property not found' });
-    }
-
-    // Increment view count
-    property.viewCount += 1;
-    await property.save();
-
-    res.status(200).json({ success: true, data: property });
-  } catch (error) {
-    next(error);
-  }
-});
 
 // Create property (protected)
 router.post('/', protect, async (req, res, next) => {
@@ -82,6 +63,32 @@ router.post('/', protect, async (req, res, next) => {
 
     const property = await Property.create(req.body);
     res.status(201).json({ success: true, data: property });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Get user's favorites
+router.get('/favorites', protect, async (req, res, next) => {
+  try {
+    const favorites = await Favorite.find({ userId: req.user._id })
+      .populate({
+        path: 'propertyId',
+        populate: { path: 'listedBy', select: 'firstName lastName' },
+      })
+      .sort({ createdAt: -1 });
+
+    res.status(200).json({ success: true, data: favorites });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Get my listings
+router.get('/my-listings', protect, async (req, res, next) => {
+  try {
+    const properties = await Property.find({ listedBy: req.user._id }).sort({ createdAt: -1 });
+    res.status(200).json({ success: true, data: properties });
   } catch (error) {
     next(error);
   }
@@ -126,6 +133,28 @@ router.delete('/:id', protect, async (req, res, next) => {
   }
 });
 
+
+// Get single property
+router.get('/:id', async (req, res, next) => {
+  try {
+    const property = await Property.findById(req.params.id)
+      .populate('listedBy', 'firstName lastName email phoneNumber')
+      .populate('agent', 'firstName lastName email phoneNumber');
+
+    if (!property) {
+      return res.status(404).json({ success: false, message: 'Property not found' });
+    }
+
+    // Increment view count
+    property.viewCount += 1;
+    await property.save();
+
+    res.status(200).json({ success: true, data: property });
+  } catch (error) {
+    next(error);
+  }
+});
+
 // Toggle favorite
 router.post('/:id/favorite', protect, async (req, res, next) => {
   try {
@@ -145,30 +174,5 @@ router.post('/:id/favorite', protect, async (req, res, next) => {
   }
 });
 
-// Get user's favorites
-router.get('/favorites', protect, async (req, res, next) => {
-  try {
-    const favorites = await Favorite.find({ userId: req.user._id })
-      .populate({
-        path: 'propertyId',
-        populate: { path: 'listedBy', select: 'firstName lastName' },
-      })
-      .sort({ createdAt: -1 });
-
-    res.status(200).json({ success: true, data: favorites });
-  } catch (error) {
-    next(error);
-  }
-});
-
-// Get my listings
-router.get('/my-listings', protect, async (req, res, next) => {
-  try {
-    const properties = await Property.find({ listedBy: req.user._id }).sort({ createdAt: -1 });
-    res.status(200).json({ success: true, data: properties });
-  } catch (error) {
-    next(error);
-  }
-});
 
 module.exports = router;
