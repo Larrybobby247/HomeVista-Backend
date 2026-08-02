@@ -1,8 +1,9 @@
 /**
  * HomeVista Backend - Main Server Entry Point
  * Express.js server with MongoDB connection
- */
+*/
 
+require('dotenv').config();
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
@@ -10,7 +11,11 @@ const helmet = require('helmet');
 const compression = require('compression');
 const morgan = require('morgan');
 const rateLimit = require('express-rate-limit');
-require('dotenv').config();
+
+console.log('Env check:');
+console.log('CLOUD_NAME:', process.env.CLOUDINARY_CLOUD_NAME || 'NOT SET');
+console.log('API_KEY:', process.env.CLOUDINARY_API_KEY ? 'SET (hidden)' : 'NOT SET');
+console.log('API_SECRET:', process.env.CLOUDINARY_API_SECRET ? 'SET (hidden)' : 'NOT SET');
 
 // Import routes
 const authRoutes = require('./routes/auth');
