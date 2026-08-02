@@ -12,10 +12,7 @@ const compression = require('compression');
 const morgan = require('morgan');
 const rateLimit = require('express-rate-limit');
 
-console.log('Env check:');
-console.log('CLOUD_NAME:', process.env.CLOUDINARY_CLOUD_NAME || 'NOT SET');
-console.log('API_KEY:', process.env.CLOUDINARY_API_KEY ? 'SET (hidden)' : 'NOT SET');
-console.log('API_SECRET:', process.env.CLOUDINARY_API_SECRET ? 'SET (hidden)' : 'NOT SET');
+
 
 // Import routes
 const authRoutes = require('./routes/auth');
