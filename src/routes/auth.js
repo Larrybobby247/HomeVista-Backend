@@ -1,6 +1,5 @@
 /**
  * HomeVista - Auth Routes
- * Authentication and user management routes
  */
 
 const express = require('express');
@@ -15,10 +14,12 @@ const {
   changePassword,
   refreshToken,
   forgotPassword,
+  resendResetCode,
+  verifyResetCode,
+  resetPassword,
 } = require('../controllers/authController');
 const { protect } = require('../middleware/auth');
 
-// Validation rules
 const registerValidation = [
   body('email').isEmail().normalizeEmail().withMessage('Please provide a valid email'),
   body('password').isLength({ min: 8 }).withMessage('Password must be at least 8 characters'),
@@ -36,7 +37,6 @@ const loginValidation = [
   body('password').notEmpty().withMessage('Password is required'),
 ];
 
-// Routes
 router.post('/register', registerValidation, register);
 router.post('/login', loginValidation, login);
 router.post('/logout', protect, logout);
@@ -44,6 +44,18 @@ router.get('/me', protect, getMe);
 router.put('/profile', protect, updateProfile);
 router.post('/change-password', protect, changePassword);
 router.post('/refresh', refreshToken);
-router.post('/forgot-password', body('email').isEmail(), forgotPassword);
+
+// Password Reset Routes
+router.post('/forgot-password', body('email').isEmail().normalizeEmail(), forgotPassword);
+router.post('/forgot-password/resend', body('email').isEmail().normalizeEmail(), resendResetCode);
+router.post('/forgot-password/verify', [
+  body('email').isEmail().normalizeEmail(),
+  body('code').isLength({ min: 6, max: 6 }).isNumeric(),
+], verifyResetCode);
+router.post('/reset-password', [
+  body('email').isEmail().normalizeEmail(),
+  body('code').isLength({ min: 6, max: 6 }).isNumeric(),
+  body('newPassword').isLength({ min: 8 }).withMessage('Password must be at least 8 characters'),
+], resetPassword);
 
 module.exports = router;
