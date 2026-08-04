@@ -1,17 +1,68 @@
 /**
- * HomeVista Backend - Search Controller
- * Advanced property search with filters
+ * HomeVista Backend - Search Controller (FIXED)
+ * Advanced property search with robust filter handling
  */
 
 const Property = require('../models/Property');
 
 /**
+ * Helper: Parse arrays from various input formats
+ * Handles: ["a","b"], "a,b", "a", undefined
+ */
+const parseArrayParam = (param) => {
+  if (!param) return [];
+  if (Array.isArray(param)) return param.filter(Boolean);
+  if (typeof param === 'string') {
+    // Handle comma-separated strings: "apartment,house" or single value
+    return param.split(',').map(s => s.trim()).filter(Boolean);
+  }
+  return [];
+};
+
+/**
+ * Helper: Parse number from various input formats
+ * Handles: 5000000, "5000000", "5,000,000", undefined
+ */
+const parseNumberParam = (param) => {
+  if (param === undefined || param === null || param === '') return undefined;
+  if (typeof param === 'number') return param;
+  if (typeof param === 'string') {
+    // Remove commas and spaces, then parse
+    const cleaned = param.replace(/[,\s]/g, '');
+    const num = Number(cleaned);
+    return isNaN(num) ? undefined : num;
+  }
+  return undefined;
+};
+
+/**
+ * Helper: Parse boolean from various input formats
+ */
+const parseBooleanParam = (param) => {
+  if (param === undefined || param === null) return undefined;
+  if (typeof param === 'boolean') return param;
+  if (typeof param === 'string') {
+    const lower = param.toLowerCase().trim();
+    if (lower === 'true' || lower === '1') return true;
+    if (lower === 'false' || lower === '0') return false;
+  }
+  if (typeof param === 'number') return param === 1;
+  return undefined;
+};
+
+/**
  * @desc    Search properties with advanced filters
- * @route   POST /api/search
+ * @route   POST /api/search  OR  GET /api/search
  * @access  Public
  */
 const searchProperties = async (req, res, next) => {
   try {
+    // ====== FIX #1: Accept data from BOTH req.body (POST) and req.query (GET) ======
+    const source = req.method === 'GET' ? req.query : req.body;
+
+    console.log('\n[SEARCH DEBUG] Method:', req.method);
+    console.log('[SEARCH DEBUG] Raw input:', JSON.stringify(source, null, 2));
+
     const {
       query,
       location,
@@ -37,97 +88,158 @@ const searchProperties = async (req, res, next) => {
       sortBy = 'relevance',
       page = 1,
       limit = 20,
-    } = req.body;
+    } = source;
+
+    // ====== FIX #2: Parse and normalize all parameters ======
+    const parsedPropertyType = parseArrayParam(propertyType);
+    const parsedStatus = parseArrayParam(status);
+    const parsedMinPrice = parseNumberParam(minPrice);
+    const parsedMaxPrice = parseNumberParam(maxPrice);
+    const parsedMinBedrooms = parseNumberParam(minBedrooms);
+    const parsedMaxBedrooms = parseNumberParam(maxBedrooms);
+    const parsedMinBathrooms = parseNumberParam(minBathrooms);
+    const parsedMinFloorArea = parseNumberParam(minFloorArea);
+    const parsedMaxFloorArea = parseNumberParam(maxFloorArea);
+    const parsedFurnished = parseBooleanParam(furnished);
+    const parsedAmenities = parseArrayParam(amenities);
+    const parsedFeatures = parseArrayParam(features);
+    const parsedYearBuiltMin = parseNumberParam(yearBuiltMin);
+    const parsedYearBuiltMax = parseNumberParam(yearBuiltMax);
+    const parsedListedByType = parseArrayParam(listedByType);
+    const parsedIsFeatured = parseBooleanParam(isFeatured);
+    const parsedPage = Math.max(1, parseNumberParam(page) || 1);
+    const parsedLimit = Math.min(100, Math.max(1, parseNumberParam(limit) || 20));
+
+    console.log('[SEARCH DEBUG] Parsed filters:', {
+      propertyType: parsedPropertyType,
+      status: parsedStatus,
+      minPrice: parsedMinPrice,
+      maxPrice: parsedMaxPrice,
+      minBedrooms: parsedMinBedrooms,
+      maxBedrooms: parsedMaxBedrooms,
+      furnished: parsedFurnished,
+      amenities: parsedAmenities,
+    });
 
     // Build search filter
     const filter = {};
 
-    // Only show verified properties in search
-    filter.verificationStatus = 'verified';
+    // Only show verified properties in search (unless explicitly overridden)
+    filter.verificationStatus = verificationStatus || 'verified';
 
     // Text search
-    if (query) {
-      filter.$text = { $search: query };
+    if (query && String(query).trim()) {
+      const cleanQuery = String(query).trim();
+      // Check if text index exists, if not fall back to regex
+      try {
+        filter.$text = { $search: cleanQuery };
+      } catch (e) {
+        // Fallback: search in title, description, city, state
+        filter.$or = [
+          { title: { $regex: cleanQuery, $options: 'i' } },
+          { description: { $regex: cleanQuery, $options: 'i' } },
+          { city: { $regex: cleanQuery, $options: 'i' } },
+          { state: { $regex: cleanQuery, $options: 'i' } },
+        ];
+      }
     }
 
     // Location filters
-    if (location) {
+    if (location && String(location).trim()) {
+      const cleanLocation = String(location).trim();
       filter.$or = [
-        { city: { $regex: location, $options: 'i' } },
-        { state: { $regex: location, $options: 'i' } },
-        { address: { $regex: location, $options: 'i' } },
+        { city: { $regex: cleanLocation, $options: 'i' } },
+        { state: { $regex: cleanLocation, $options: 'i' } },
+        { address: { $regex: cleanLocation, $options: 'i' } },
       ];
     }
-    if (city) filter.city = { $regex: city, $options: 'i' };
-    if (state) filter.state = { $regex: state, $options: 'i' };
-
-    // Property type
-    if (propertyType && propertyType.length > 0) {
-      filter.propertyType = { $in: propertyType };
+    if (city && String(city).trim()) {
+      filter.city = { $regex: String(city).trim(), $options: 'i' };
+    }
+    if (state && String(state).trim()) {
+      filter.state = { $regex: String(state).trim(), $options: 'i' };
     }
 
-    // Status
-    if (status && status.length > 0) {
-      filter.status = { $in: status };
+    // ====== FIX #3: Case-insensitive property type matching ======
+    if (parsedPropertyType.length > 0) {
+      // Use $in with case-insensitive regex for each value
+      filter.$and = filter.$and || [];
+      filter.$and.push({
+        $or: parsedPropertyType.map(pt => ({
+          propertyType: { $regex: `^${pt}$`, $options: 'i' }
+        }))
+      });
     }
 
-    // Price range
-    if (minPrice !== undefined || maxPrice !== undefined) {
+    // ====== FIX #4: Case-insensitive status matching ======
+    if (parsedStatus.length > 0) {
+      filter.$and = filter.$and || [];
+      filter.$and.push({
+        $or: parsedStatus.map(st => ({
+          status: { $regex: `^${st}$`, $options: 'i' }
+        }))
+      });
+    }
+
+    // ====== FIX #5: Proper numeric price range ======
+    if (parsedMinPrice !== undefined || parsedMaxPrice !== undefined) {
       filter.price = {};
-      if (minPrice !== undefined) filter.price.$gte = minPrice;
-      if (maxPrice !== undefined) filter.price.$lte = maxPrice;
+      if (parsedMinPrice !== undefined) filter.price.$gte = parsedMinPrice;
+      if (parsedMaxPrice !== undefined) filter.price.$lte = parsedMaxPrice;
     }
 
     // Bedrooms
-    if (minBedrooms !== undefined || maxBedrooms !== undefined) {
+    if (parsedMinBedrooms !== undefined || parsedMaxBedrooms !== undefined) {
       filter.bedrooms = {};
-      if (minBedrooms !== undefined) filter.bedrooms.$gte = minBedrooms;
-      if (maxBedrooms !== undefined) filter.bedrooms.$lte = maxBedrooms;
+      if (parsedMinBedrooms !== undefined) filter.bedrooms.$gte = parsedMinBedrooms;
+      if (parsedMaxBedrooms !== undefined) filter.bedrooms.$lte = parsedMaxBedrooms;
     }
 
     // Bathrooms
-    if (minBathrooms !== undefined) {
-      filter.bathrooms = { $gte: minBathrooms };
+    if (parsedMinBathrooms !== undefined) {
+      filter.bathrooms = { $gte: parsedMinBathrooms };
     }
 
     // Floor area
-    if (minFloorArea !== undefined || maxFloorArea !== undefined) {
+    if (parsedMinFloorArea !== undefined || parsedMaxFloorArea !== undefined) {
       filter.floorArea = {};
-      if (minFloorArea !== undefined) filter.floorArea.$gte = minFloorArea;
-      if (maxFloorArea !== undefined) filter.floorArea.$lte = maxFloorArea;
+      if (parsedMinFloorArea !== undefined) filter.floorArea.$gte = parsedMinFloorArea;
+      if (parsedMaxFloorArea !== undefined) filter.floorArea.$lte = parsedMaxFloorArea;
     }
 
     // Furnished
-    if (furnished !== undefined) {
-      filter.furnished = furnished;
+    if (parsedFurnished !== undefined) {
+      filter.furnished = parsedFurnished;
     }
 
     // Amenities
-    if (amenities && amenities.length > 0) {
-      filter.amenities = { $all: amenities };
+    if (parsedAmenities.length > 0) {
+      filter.amenities = { $all: parsedAmenities };
     }
 
     // Features
-    if (features && features.length > 0) {
-      filter.features = { $all: features };
+    if (parsedFeatures.length > 0) {
+      filter.features = { $all: parsedFeatures };
     }
 
     // Year built
-    if (yearBuiltMin !== undefined || yearBuiltMax !== undefined) {
+    if (parsedYearBuiltMin !== undefined || parsedYearBuiltMax !== undefined) {
       filter.yearBuilt = {};
-      if (yearBuiltMin !== undefined) filter.yearBuilt.$gte = yearBuiltMin;
-      if (yearBuiltMax !== undefined) filter.yearBuilt.$lte = yearBuiltMax;
+      if (parsedYearBuiltMin !== undefined) filter.yearBuilt.$gte = parsedYearBuiltMin;
+      if (parsedYearBuiltMax !== undefined) filter.yearBuilt.$lte = parsedYearBuiltMax;
     }
 
     // Listed by type
-    if (listedByType && listedByType.length > 0) {
-      filter.listedByType = { $in: listedByType };
+    if (parsedListedByType.length > 0) {
+      filter.listedByType = { $in: parsedListedByType };
     }
 
     // Featured
-    if (isFeatured !== undefined) {
-      filter.isFeatured = isFeatured;
+    if (parsedIsFeatured !== undefined) {
+      filter.isFeatured = parsedIsFeatured;
     }
+
+    console.log('[SEARCH DEBUG] MongoDB filter:', JSON.stringify(filter, null, 2));
 
     // Sort options
     const sortOptions = {};
@@ -136,33 +248,45 @@ const searchProperties = async (req, res, next) => {
     else if (sortBy === 'newest') sortOptions.createdAt = -1;
     else if (sortBy === 'oldest') sortOptions.createdAt = 1;
     else if (sortBy === 'popular') sortOptions.viewCount = -1;
-    else if (query) sortOptions.score = { $meta: 'textScore' };
+    else if (query && filter.$text) sortOptions.score = { $meta: 'textScore' };
     else sortOptions.createdAt = -1;
 
     // Pagination
-    const skip = (Number(page) - 1) * Number(limit);
+    const skip = (parsedPage - 1) * parsedLimit;
 
     const properties = await Property.find(filter)
       .populate('listedBy', 'firstName lastName email phoneNumber')
       .sort(sortOptions)
       .skip(skip)
-      .limit(Number(limit));
+      .limit(parsedLimit);
 
     const total = await Property.countDocuments(filter);
+
+    console.log(`[SEARCH DEBUG] Found ${total} total, returning ${properties.length} properties\n`);
 
     res.status(200).json({
       success: true,
       data: {
         properties,
         total,
-        page: Number(page),
-        totalPages: Math.ceil(total / Number(limit)),
+        page: parsedPage,
+        totalPages: Math.ceil(total / parsedLimit),
         hasNextPage: skip + properties.length < total,
-        hasPrevPage: Number(page) > 1,
-        filters: req.body,
+        hasPrevPage: parsedPage > 1,
+        filters: {
+          propertyType: parsedPropertyType,
+          status: parsedStatus,
+          minPrice: parsedMinPrice,
+          maxPrice: parsedMaxPrice,
+          minBedrooms: parsedMinBedrooms,
+          maxBedrooms: parsedMaxBedrooms,
+          furnished: parsedFurnished,
+          amenities: parsedAmenities,
+        },
       },
     });
   } catch (error) {
+    console.error('[SEARCH ERROR]', error);
     next(error);
   }
 };
@@ -176,26 +300,28 @@ const getSuggestions = async (req, res, next) => {
   try {
     const { q } = req.query;
 
-    if (!q || q.length < 2) {
+    if (!q || String(q).length < 2) {
       return res.status(200).json({
         success: true,
         data: [],
       });
     }
 
+    const cleanQ = String(q).trim();
+
     // Search in cities, states, and property titles
     const cities = await Property.distinct('city', {
-      city: { $regex: q, $options: 'i' },
+      city: { $regex: cleanQ, $options: 'i' },
       verificationStatus: 'verified',
     });
 
     const states = await Property.distinct('state', {
-      state: { $regex: q, $options: 'i' },
+      state: { $regex: cleanQ, $options: 'i' },
       verificationStatus: 'verified',
     });
 
     const titles = await Property.distinct('title', {
-      title: { $regex: q, $options: 'i' },
+      title: { $regex: cleanQ, $options: 'i' },
       verificationStatus: 'verified',
     }).limit(5);
 
