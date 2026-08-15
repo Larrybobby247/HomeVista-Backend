@@ -1,6 +1,5 @@
 /**
- * HomeVista - Payment Model
- * Mongoose schema for payments, transactions, and wallet operations
+ * HomeVista - Payment Model (Updated)
  */
 
 const mongoose = require('mongoose');
@@ -18,7 +17,7 @@ const paymentSchema = new mongoose.Schema({
   type: {
     type: String,
     required: true,
-    enum: ['reservation', 'rent', 'agency_fee', 'inspection_fee', 'featured_ad', 'subscription', 'verification_fee', 'commission', 'service_charge', 'caution_fee', 'legal_fee'],
+    enum: ['reservation', 'rent', 'agency_fee', 'inspection_fee', 'featured_ad', 'subscription', 'verification_fee', 'commission', 'service_charge', 'caution_fee', 'legal_fee', 'purchase', 'wallet_fund'],
   },
   amount: {
     type: Number,
@@ -38,7 +37,7 @@ const paymentSchema = new mongoose.Schema({
   },
 
   // Payment provider details
-  providerReference: { type: String },
+  providerReference: { type: String, index: true }, // indexed for webhook speed
   providerResponse: { type: mongoose.Schema.Types.Mixed },
 
   // Escrow for secure transactions
@@ -71,5 +70,6 @@ paymentSchema.index({ userId: 1 });
 paymentSchema.index({ status: 1 });
 paymentSchema.index({ type: 1 });
 paymentSchema.index({ createdAt: -1 });
+paymentSchema.index({ providerReference: 1 }); // critical for Paystack webhook
 
 module.exports = mongoose.model('Payment', paymentSchema);

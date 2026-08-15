@@ -63,6 +63,9 @@ const authLimiter = rateLimit({
 app.use('/api/auth/login', authLimiter);
 app.use('/api/auth/register', authLimiter);
 
+// ── WEBHOOK: raw body required for signature verification ──
+app.use('/api/payments/webhook', express.raw({ type: 'application/json' }), require('./routes/payments'));
+
 // ============================================
 // GENERAL MIDDLEWARE
 // ============================================
