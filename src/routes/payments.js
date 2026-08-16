@@ -335,4 +335,22 @@ router.post('/webhook', async (req, res) => {
   res.sendStatus(200);
 });
 
+// Temporary callback page so WebView doesn't crash on deep links
+router.get('/callback-page', (req, res) => {
+  const ref = req.query.reference || req.query.trxref || '';
+  res.send(`
+    <!DOCTYPE html>
+    <html>
+      <head><meta name="viewport" content="width=device-width, initial-scale=1"></head>
+      <body style="display:flex;align-items:center;justify-content:center;height:100vh;margin:0;font-family:sans-serif;background:#f8fafc;">
+        <div style="text-align:center;">
+          <h2 style="color:#003334;">Processing Payment...</h2>
+          <p style="color:#64748b;">Please return to the app.</p>
+          <p style="font-size:12px;color:#94a3b8;">Ref: ${ref}</p>
+        </div>
+      </body>
+    </html>
+  `);
+});
+
 module.exports = router;
