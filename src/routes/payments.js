@@ -52,7 +52,7 @@ router.post('/initialize', protect, async (req, res, next) => {
         email: req.user.email,
         amount: Math.round(amount * 100), // kobo
         reference,
-        callback_url: `${process.env.FRONTEND_URL}/payments/verify`,
+        callback_url: `${process.env.API_URL}/api/payments/callback-page`,
         metadata: {
           user_id: req.user._id.toString(),
           property_id: propertyId || null,
