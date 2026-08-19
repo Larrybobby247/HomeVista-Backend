@@ -197,13 +197,63 @@ router.get('/verify/:reference', protect, async (req, res, next) => {
 // ─────────────────────────────────────────────────────────────────
 router.get('/history', protect, async (req, res, next) => {
   try {
-    const payments = await Payment.find({ userId: req.user._id })
-      .populate('propertyId', 'title images address city')
-      .sort({ createdAt: -1 });
+    const { type, limit = 50, page = 1, status } = req.query;
+    
+    // Build query
+    const query = { userId: req.user._id };
+    if (status) query.status = status;
+    
+    // Map frontend type names to backend types
+    if (type) {
+      const typeMap = {
+        'purchase': ['purchase', 'property_purchase'],
+        'deposit': ['wallet_fund'],
+        'rent': ['rent'],
+        'fee': ['service_charge', 'agency_fee', 'legal_fee', 'caution_fee'],
+      };
+      query.type = typeMap[type] || type;
+    }
+
+    const payments = await Payment.find(query)
+      .populate({
+        path: 'propertyId',
+        select: 'title images address city state listedBy status',
+        populate: {
+          path: 'listedBy',
+          select: 'firstName lastName fullName email'
+        }
+      })
+      .sort({ createdAt: -1 })
+      .limit(parseInt(limit))
+      .skip((parseInt(page) - 1) * parseInt(limit));
+
+    // Map to EXACT shape frontend expects
+    const mapped = payments.map(p => {
+      const property = p.propertyId;
+      const seller = property?.listedBy;
+      
+      return {
+        _id: p._id,
+        propertyId: property?._id?.toString() || p.propertyId?.toString() || '',
+        propertyTitle: property?.title || p.description || 'Property Transaction',
+        propertyImage: property?.images?.[0]?.url || null,
+        amount: p.amount,
+        status: p.status,
+        type: p.type === 'property_purchase' ? 'purchase' : p.type,
+        paymentMethod: p.method || p.channel || 'card',
+        createdAt: p.createdAt,
+        completedAt: p.completedAt,
+        transactionRef: p.providerReference || p._id.toString(),
+        sellerName: seller?.fullName || `${seller?.firstName || ''} ${seller?.lastName || ''}`.trim() || 'HomeVista',
+        description: p.description,
+        currency: p.currency || 'NGN',
+      };
+    });
 
     res.status(200).json({
       success: true,
-      data: payments,
+      count: mapped.length,
+      data: mapped,
     });
   } catch (error) {
     next(error);
@@ -218,13 +268,37 @@ router.get('/:id', protect, async (req, res, next) => {
     const payment = await Payment.findOne({
       _id: req.params.id,
       userId: req.user._id,
-    }).populate('propertyId', 'title images address city');
+    }).populate({
+      path: 'propertyId',
+      select: 'title images address city state listedBy',
+      populate: { path: 'listedBy', select: 'firstName lastName fullName' }
+    });
 
     if (!payment) {
       return res.status(404).json({ success: false, message: 'Payment not found' });
     }
 
-    res.status(200).json({ success: true, data: payment });
+    const property = payment.propertyId;
+    const seller = property?.listedBy;
+
+    const mapped = {
+      _id: payment._id,
+      propertyId: property?._id?.toString() || '',
+      propertyTitle: property?.title || payment.description || 'Property Transaction',
+      propertyImage: property?.images?.[0]?.url || null,
+      amount: payment.amount,
+      status: payment.status,
+      type: payment.type === 'property_purchase' ? 'purchase' : payment.type,
+      paymentMethod: payment.method || payment.channel || 'card',
+      createdAt: payment.createdAt,
+      completedAt: payment.completedAt,
+      transactionRef: payment.providerReference || payment._id.toString(),
+      sellerName: seller?.fullName || 'HomeVista',
+      description: payment.description,
+      currency: payment.currency || 'NGN',
+    };
+
+    res.status(200).json({ success: true, data: mapped });
   } catch (error) {
     next(error);
   }
