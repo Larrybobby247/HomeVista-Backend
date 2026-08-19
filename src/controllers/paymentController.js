@@ -261,12 +261,31 @@ const verifyPayment = async (req, res, next) => {
 const getPaymentHistory = async (req, res, next) => {
   try {
     const payments = await Payment.find({ userId: req.user._id })
-      .populate('propertyId', 'title images address city')
+      .populate('propertyId', 'title images address city state listedBy')
+      .populate('userId', 'firstName lastName email')
       .sort({ createdAt: -1 });
+
+    // Map to the shape your frontend expects
+    const mapped = payments.map((p) => ({
+      _id: p._id,
+      propertyId: p.propertyId?._id?.toString() || p.propertyId,
+      propertyTitle: p.propertyId?.title || p.description || 'Property Transaction',
+      propertyImage: p.propertyId?.images?.[0]?.url || null,
+      amount: p.amount,
+      status: p.status, // 'pending', 'completed', 'failed', etc.
+      type: p.type,     // 'purchase', 'rent', 'wallet_fund', etc.
+      paymentMethod: p.method || p.channel || 'card',
+      createdAt: p.createdAt,
+      completedAt: p.completedAt,
+      transactionRef: p.providerReference || p._id.toString(),
+      sellerName: p.propertyId?.listedBy?.fullName || 'HomeVista',
+      description: p.description,
+      currency: p.currency || 'NGN',
+    }));
 
     res.status(200).json({
       success: true,
-      data: payments,
+      data: mapped,
     });
   } catch (error) {
     next(error);
