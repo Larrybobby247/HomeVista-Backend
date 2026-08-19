@@ -110,6 +110,31 @@ const initializePayment = async (req, res, next) => {
   }
 };
 
+const updatePropertyOnPayment = async (payment) => {
+  // Only run for property-related payments that have a propertyId
+  if (!payment.propertyId) return;
+  if (!['purchase', 'rent', 'reservation'].includes(payment.type)) return;
+
+  const property = await Property.findById(payment.propertyId);
+  if (!property) return;
+
+  // Determine new status based on how the property was listed
+  // If your property model uses 'listingType' (for_sale / for_rent):
+  const isRental = property.listingType === 'for_rent' || property.listingType === 'rent';
+  
+  // Or if you determine it from the payment type:
+  // const isRental = payment.type === 'rent';
+
+  property.status = isRental ? 'rented' : 'sold';
+  
+  // Record who bought/rented it
+  property.buyer = payment.userId;      // or property.tenant = payment.userId
+  property.soldAt = new Date();         // or property.rentedAt
+  property.paymentReference = payment.providerReference;
+
+  await property.save();
+};
+
 /**
  * @desc    Verify payment (with Paystack)
  * @route   GET /api/payments/verify/:reference
@@ -139,6 +164,22 @@ const verifyPayment = async (req, res, next) => {
         message: 'Payment already verified',
         data: payment,
       });
+    }
+        if (newStatus === 'completed') {
+      // ─── UPDATE PROPERTY STATUS ───
+      await updatePropertyOnPayment(payment);
+
+      // Wallet funding (keep your existing logic)
+      if (payment.type === 'wallet_fund') {
+        await User.findByIdAndUpdate(req.user._id, {
+          $inc: { walletBalance: payment.amount },
+        });
+      }
+
+      // Subscription (keep your existing logic)
+      if (payment.type === 'subscription') {
+        // TODO: activate subscription
+      }
     }
 
     // Verify with Paystack
@@ -295,6 +336,8 @@ const paystackWebhook = async (req, res) => {
       );
 
       if (payment) {
+        // ─── UPDATE PROPERTY STATUS (same helper) ───
+        await updatePropertyOnPayment(payment);
         // Apply business logic
         if (payment.type === 'property_purchase' && payment.propertyId) {
           await Property.findByIdAndUpdate(payment.propertyId, {
