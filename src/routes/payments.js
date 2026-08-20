@@ -373,33 +373,6 @@ router.get("/wallet/transactions", protect, async (req, res, next) => {
   }
 });
 
-const Transaction = require('../models/Transaction'); // or Payment, whatever your model is
-
-router.post('/api/payouts', async (req, res) => {
-  const { userId, amount, netAmount, platformFee, bankName, accountNumber, accountName, currency } = req.body;
-
-  try {
-    const payout = await Transaction.create({
-      userId,
-      type: 'payout',
-      amount: netAmount,        // what the seller receives
-      netAmount,
-      platformFee,
-      status: 'pending',
-      method: 'bank_transfer',
-      description: `Payout to ${bankName} ••••${accountNumber.slice(-4)}`,
-      bankName,
-      accountNumber,
-      accountName,
-      currency: currency || 'NGN',
-    });
-
-    res.json({ success: true, data: payout });
-  } catch (err) {
-    console.error('Payout creation failed:', err);
-    res.status(500).json({ success: false, message: 'Failed to record payout' });
-  }
-});
 
 
 // ─────────────────────────────────────────────────────────────────
