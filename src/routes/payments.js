@@ -510,7 +510,7 @@ router.get("/callback-page", (req, res) => {
 
 
 
-router.post('/api/send-payout-email', async (req, res) => {
+router.post('/send-payout-email', async (req, res) => {
   const { subject, body } = req.body;
 
   try {
