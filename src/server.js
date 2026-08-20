@@ -69,7 +69,6 @@ app.use(
   express.raw({ type: 'application/json' })
 );
 
-app.use('/api/payments', require('./routes/payments'));
 
 // ============================================
 // GENERAL MIDDLEWARE
