@@ -119,4 +119,24 @@ router.patch('/conversations/:id/read', protect, async (req, res, next) => {
   }
 });
 
+router.get('/conversations/:id', protect, async (req, res, next) => {
+  try {
+    const conversation = await Conversation.findById(req.params.id)
+      .populate('participants', 'firstName lastName email avatar')
+      .populate('propertyId', 'title images price listedBy')
+      .populate({
+        path: 'lastMessage',
+        populate: { path: 'senderId', select: 'firstName lastName' },
+      });
+
+    if (!conversation) {
+      return res.status(404).json({ success: false, message: 'Conversation not found' });
+    }
+
+    res.status(200).json({ success: true, data: conversation });
+  } catch (error) {
+    next(error);
+  }
+});
+
 module.exports = router;
