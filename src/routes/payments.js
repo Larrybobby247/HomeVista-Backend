@@ -14,6 +14,10 @@ const Property = require("../models/Property");
 const PAYSTACK_SECRET = process.env.PAYSTACK_SECRET_KEY;
 const PAYSTACK_BASE = "https://api.paystack.co";
 
+// routes/payment.js or server.js
+const { Resend } = require('resend');
+const resend = new Resend(process.env.RESEND_API_KEY);
+
 // ─────────────────────────────────────────────────────────────────
 // HELPER: Call Paystack API
 // ─────────────────────────────────────────────────────────────────
@@ -467,6 +471,42 @@ router.get("/callback-page", (req, res) => {
     <html>
       <head><meta name="viewport" content="width=device-width, initial-scale=1"></head>
     </html>`);
+});
+
+
+
+router.post('/api/send-payout-email', async (req, res) => {
+  const { subject, body } = req.body;
+
+  try {
+    const { data, error } = await resend.emails.send({
+  from: process.env.FROM_EMAIL,
+  to: process.env.COMPANY_EMAIL,
+  subject,
+  html: `
+    <h2>New Payout Request</h2>
+    <table style="font-family: sans-serif; line-height: 1.6;">
+      <tr><td><strong>Seller</strong></td><td>${displayName}</td></tr>
+      <tr><td><strong>Amount</strong></td><td>${formatCurrency(payoutSummary.amount)}</td></tr>
+      <tr><td><strong>Platform Fee (3%)</strong></td><td>${formatCurrency(payoutSummary.platformFee)}</td></tr>
+      <tr><td><strong>Net Payout</strong></td><td style="color: green;"><strong>${formatCurrency(payoutSummary.netAmount)}</strong></td></tr>
+      <tr><td><strong>Bank</strong></td><td>${payoutSummary.bankName}</td></tr>
+      <tr><td><strong>Account Name</strong></td><td>${payoutSummary.accountName}</td></tr>
+      <tr><td><strong>Account Number</strong></td><td>${payoutSummary.accountNumber}</td></tr>
+    </table>
+  `,
+});
+
+    if (error) {
+      console.error('Resend error:', error);
+      return res.status(500).json({ success: false, message: error.message });
+    }
+
+    res.json({ success: true, id: data?.id });
+  } catch (err) {
+    console.error('Email send failed:', err);
+    res.status(500).json({ success: false, message: 'Email service failed' });
+  }
 });
 
 module.exports = router;
