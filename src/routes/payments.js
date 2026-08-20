@@ -386,7 +386,7 @@ router.post('/payouts', protect, async (req, res, next) => {
       userId: req.user._id,           // who requested it
       recipientId: req.user._id,      // who receives it (same person)
       type: 'payout',
-      amount: netAmount,              // what seller receives
+      amount,              // what seller receives
       platformFee,
       status: 'pending',
       method: 'bank_transfer',
