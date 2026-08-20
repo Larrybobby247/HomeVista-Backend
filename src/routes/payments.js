@@ -164,9 +164,9 @@ router.get('/verify/:reference', protect, async (req, res, next) => {
       // Property purchase / reservation
       if (payment.propertyId && ['reservation', 'rent', 'purchase'].includes(payment.type)) {
         // Example: mark property as reserved/sold
-        // await Property.findByIdAndUpdate(payment.propertyId, {
-        //   $set: { status: payment.type === 'purchase' ? 'sold' : 'reserved' }
-        // });
+        await Property.findByIdAndUpdate(payment.propertyId, {
+          $set: { status: payment.type === 'purchase' ? 'sold' : 'reserved' }
+        });
       }
 
       // Wallet funding
