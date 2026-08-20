@@ -59,7 +59,7 @@ const propertySchema = new mongoose.Schema({
   status: {
     type: String,
     required: [true, 'Property status is required'],
-    enum: ['for_sale', 'for_rent', 'lease', 'shortlet'],
+    enum: ['for_sale', 'for_rent', 'lease', 'shortlet', 'sold', 'rented'],
   },
   bedrooms: { type: Number, min: 0 },
   bathrooms: { type: Number, min: 0 },
