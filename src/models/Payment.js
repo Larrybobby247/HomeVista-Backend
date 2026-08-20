@@ -70,6 +70,6 @@ paymentSchema.index({ userId: 1 });
 paymentSchema.index({ status: 1 });
 paymentSchema.index({ type: 1 });
 paymentSchema.index({ createdAt: -1 });
-paymentSchema.index({ providerReference: 1 }); // critical for Paystack webhook
+// paymentSchema.index({ providerReference: 1 }); // critical for Paystack webhook
 
 module.exports = mongoose.model('Payment', paymentSchema);
