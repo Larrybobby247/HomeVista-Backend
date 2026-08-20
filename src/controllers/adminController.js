@@ -35,16 +35,16 @@ exports.getDashboardStats = async (req, res, next) => {
     const propertiesByVerificationObj = {};
     propertiesByVerification.forEach(item => { propertiesByVerificationObj[item._id] = item.count; });
 
-    // Get total revenue
+        // Get total revenue (EXCLUDE payouts — money leaving platform)
     const revenueResult = await Payment.aggregate([
-      { $match: { status: 'completed' } },
+      { $match: { status: 'completed', type: { $ne: 'payout' } } },
       { $group: { _id: null, total: { $sum: '$amount' } } },
     ]);
     const totalRevenue = revenueResult[0]?.total || 0;
 
     // Get revenue by month
     const revenueByMonth = await Payment.aggregate([
-      { $match: { status: 'completed' } },
+      { $match: { status: 'completed', type: { $ne: 'payout' } } },
       {
         $group: {
           _id: { $dateToString: { format: '%Y-%m', date: '$createdAt' } },
@@ -406,9 +406,9 @@ exports.getAllPayments = async (req, res, next) => {
     if (method) query.method = method;
 
     const payments = await Payment.find(query)
-      .populate('userId', 'firstName lastName email')
-      .populate('propertyId', 'title')
-      .populate('recipientId', 'firstName lastName email')
+       .populate('userId', 'firstName lastName email phoneNumber')
+      .populate('propertyId', 'title address city images')
+      .populate('recipientId', 'firstName lastName email phoneNumber bankDetails')
       .sort({ createdAt: -1 })
       .skip((page - 1) * limit)
       .limit(parseInt(limit));
@@ -449,18 +449,32 @@ exports.getPendingPayments = async (req, res, next) => {
  */
 exports.confirmPayment = async (req, res, next) => {
   try {
-    const payment = await Payment.findByIdAndUpdate(
-      req.params.id,
-      {
-        status: 'completed',
-        completedAt: new Date(),
-      },
-      { new: true }
-    );
+    const payment = await Payment.findById(req.params.id);
 
     if (!payment) {
       return res.status(404).json({ success: false, message: 'Payment not found' });
     }
+
+    // PAYOUTS: Only change status. Do NOT credit any wallet.
+    if (payment.type === 'payout') {
+      payment.status = 'completed';
+      payment.completedAt = new Date();
+      await payment.save();
+
+      return res.status(200).json({
+        success: true,
+        message: 'Payout confirmed as sent to seller',
+        data: payment,
+      });
+    }
+
+    // REGULAR PAYMENTS: Confirm as normal
+    payment.status = 'completed';
+    payment.completedAt = new Date();
+    await payment.save();
+
+    // (Optional) Credit seller wallet for sales/rent here
+    // if (payment.recipientId) { ... }
 
     res.status(200).json({
       success: true,
@@ -509,20 +523,24 @@ exports.sendPaymentToSeller = async (req, res, next) => {
   try {
     const { paymentId, recipientId, amount } = req.body;
 
-    const payment = await Payment.findByIdAndUpdate(
-      paymentId,
-      {
-        recipientId,
-        status: 'completed',
-        completedAt: new Date(),
-        description: `Payment sent to seller: ${amount}`,
-      },
-      { new: true }
-    );
-
+    const payment = await Payment.findById(paymentId);
     if (!payment) {
       return res.status(404).json({ success: false, message: 'Payment not found' });
     }
+
+    // Guard: Send-to-seller is for regular payments only, not payouts
+    if (payment.type === 'payout') {
+      return res.status(400).json({
+        success: false,
+        message: 'Payouts must be confirmed using Confirm, not Send to Seller',
+      });
+    }
+
+        payment.recipientId = recipientId || payment.recipientId;
+    payment.status = 'completed';
+    payment.completedAt = new Date();
+    payment.description = `Payment sent to seller: ${amount}`;
+    await payment.save();
 
     res.status(200).json({
       success: true,
@@ -613,19 +631,19 @@ exports.getTransactionSummary = async (req, res, next) => {
 
     // Total revenue
     const revenueResult = await Payment.aggregate([
-      { $match: { status: 'completed' } },
+      { $match: { status: 'completed', type: { $ne: 'payout' } } },
       { $group: { _id: null, total: { $sum: '$amount' }, count: { $sum: 1 } } },
     ]);
 
     // Pending
     const pendingResult = await Payment.aggregate([
-      { $match: { status: 'pending' } },
+      { $match: { status: 'pending', type: { $ne: 'payout' } } },
       { $group: { _id: null, total: { $sum: '$amount' }, count: { $sum: 1 } } },
     ]);
 
     // Refunded
     const refundedResult = await Payment.aggregate([
-      { $match: { status: 'refunded' } },
+      { $match: { status: 'refunded', type: { $ne: 'payout' } } },
       { $group: { _id: null, total: { $sum: '$amount' }, count: { $sum: 1 } } },
     ]);
 
@@ -695,4 +713,4 @@ exports.getRevenueAnalytics = async (req, res, next) => {
   } catch (error) {
     next(error);
   }
-};
+}
