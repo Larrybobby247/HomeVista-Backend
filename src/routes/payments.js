@@ -235,11 +235,12 @@ router.get("/history", protect, async (req, res, next) => {
 
     if (type) {
       const typeMap = {
-        purchase: ["purchase", "property_purchase"],
-        deposit: ["wallet_fund"],
-        rent: ["rent"],
-        fee: ["service_charge", "agency_fee", "legal_fee", "caution_fee"],
-      };
+  purchase: ["purchase", "property_purchase"],
+  deposit: ["wallet_fund"],
+  rent: ["rent"],
+  fee: ["service_charge", "agency_fee", "legal_fee", "caution_fee"],
+  payout: ["payout"],
+};
       query.type = typeMap[type] || type;
     }
 
@@ -261,25 +262,27 @@ router.get("/history", protect, async (req, res, next) => {
       const seller = property?.listedBy;
 
       return {
-        _id: p._id,
-        propertyId: property?._id?.toString() || p.propertyId?.toString() || "",
-        propertyTitle:
-          property?.title || p.description || "Property Transaction",
-        propertyImage: property?.images?.[0]?.url || null,
-        amount: p.amount,
-        status: p.status,
-        type: p.type === "property_purchase" ? "purchase" : p.type,
-        paymentMethod: p.method || p.channel || "card",
-        createdAt: p.createdAt,
-        completedAt: p.completedAt,
-        transactionRef: p.providerReference || p._id.toString(),
-        sellerName:
-          seller?.fullName ||
-          `${seller?.firstName || ""} ${seller?.lastName || ""}`.trim() ||
-          "HomeVista",
-        description: p.description,
-        currency: p.currency || "NGN",
-      };
+  _id: p._id,
+  propertyId: property?._id?.toString() || p.propertyId?.toString() || "",
+  propertyTitle: property?.title || p.description || "Property Transaction",
+  propertyImage: property?.images?.[0]?.url || null,
+  amount: p.amount,
+  status: p.status,
+  type: p.type === "property_purchase" ? "purchase" : p.type,
+  paymentMethod: p.method || p.channel || "card",
+  createdAt: p.createdAt,
+  completedAt: p.completedAt,
+  transactionRef: p.providerReference || p._id.toString(),
+  sellerName: seller?.fullName || `${seller?.firstName || ""} ${seller?.lastName || ""}`.trim() || "HomeVista",
+  description: p.description,
+  currency: p.currency || "NGN",
+  
+  // ADD THESE for payouts
+  bankName: p.recipientBankDetails?.bankName,
+  accountNumber: p.recipientBankDetails?.accountNumber,
+  accountName: p.recipientBankDetails?.accountName,
+  platformFee: p.platformFee,
+};
     });
 
     res.status(200).json({
@@ -374,6 +377,36 @@ router.get("/wallet/transactions", protect, async (req, res, next) => {
 });
 
 
+
+router.post('/payouts', protect, async (req, res, next) => {
+  try {
+    const { amount, netAmount, platformFee, bankName, accountNumber, accountName, currency } = req.body;
+
+    const payout = await Payment.create({
+      userId: req.user._id,           // who requested it
+      recipientId: req.user._id,      // who receives it (same person)
+      type: 'payout',
+      amount: netAmount,              // what seller receives
+      platformFee,
+      status: 'pending',
+      method: 'bank_transfer',
+      description: `Payout to ${bankName} ••••${accountNumber.slice(-4)}`,
+      currency: currency || 'NGN',
+      recipientBankDetails: {
+        bankName,
+        accountNumber,
+        accountName,
+      },
+    });
+
+    res.status(201).json({
+      success: true,
+      data: payout,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
 
 // ─────────────────────────────────────────────────────────────────
 // POST /api/payments/wallet/fund

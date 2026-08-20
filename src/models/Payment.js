@@ -17,7 +17,7 @@ const paymentSchema = new mongoose.Schema({
   type: {
     type: String,
     required: true,
-    enum: ['reservation', 'rent', 'agency_fee', 'inspection_fee', 'featured_ad', 'subscription', 'verification_fee', 'commission', 'service_charge', 'caution_fee', 'legal_fee', 'purchase', 'wallet_fund'],
+    enum: ['reservation', 'rent', 'agency_fee', 'inspection_fee', 'featured_ad', 'subscription', 'verification_fee', 'commission', 'service_charge', 'caution_fee', 'legal_fee', 'purchase', 'wallet_fund', 'payout'],
   },
   amount: {
     type: Number,
