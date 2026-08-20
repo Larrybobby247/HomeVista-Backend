@@ -12,13 +12,43 @@ router.get('/conversations', protect, async (req, res, next) => {
     const conversations = await Conversation.find({ participants: req.user._id })
       .populate('participants', 'firstName lastName email avatar')
       .populate('propertyId', 'title images')
-      .populate({
-        path: 'lastMessage',
-        populate: { path: 'senderId', select: 'firstName lastName' },
-      })
-      .sort({ updatedAt: -1 });
+      .sort({ updatedAt: -1 })
+      .lean();
 
-    res.status(200).json({ success: true, data: conversations });
+    const convIds = conversations.map((c) => c._id);
+
+    // latest message per conversation, computed live from the messages collection
+    const lastMessages = await Message.aggregate([
+      { $match: { conversationId: { $in: convIds } } },
+      { $sort: { createdAt: -1 } },
+      { $group: { _id: '$conversationId', doc: { $first: '$$ROOT' } } },
+    ]);
+    const lastMessageMap = Object.fromEntries(
+      lastMessages.map((m) => [String(m._id), m.doc])
+    );
+
+    // unread count per conversation
+    const unreadCounts = await Message.aggregate([
+      {
+        $match: {
+          conversationId: { $in: convIds },
+          senderId: { $ne: req.user._id },
+          isRead: false,
+        },
+      },
+      { $group: { _id: '$conversationId', count: { $sum: 1 } } },
+    ]);
+    const unreadMap = Object.fromEntries(
+      unreadCounts.map((u) => [String(u._id), u.count])
+    );
+
+    const enriched = conversations.map((c) => ({
+      ...c,
+      lastMessage: lastMessageMap[String(c._id)] || null,
+      unreadCount: unreadMap[String(c._id)] || 0,
+    }));
+
+    res.status(200).json({ success: true, data: enriched });
   } catch (error) {
     next(error);
   }
@@ -72,6 +102,18 @@ router.post('/conversations/:id/messages', protect, async (req, res, next) => {
     await message.populate('senderId', 'firstName lastName avatar');
 
     res.status(201).json({ success: true, data: message });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.patch('/conversations/:id/read', protect, async (req, res, next) => {
+  try {
+    await Message.updateMany(
+      { conversationId: req.params.id, senderId: { $ne: req.user._id }, isRead: false },
+      { $set: { isRead: true, readAt: new Date() } }
+    );
+    res.status(200).json({ success: true });
   } catch (error) {
     next(error);
   }
