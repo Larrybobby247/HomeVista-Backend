@@ -468,3 +468,5 @@ router.get("/callback-page", (req, res) => {
       <head><meta name="viewport" content="width=device-width, initial-scale=1"></head>
     </html>`);
 });
+
+module.exports = router;
