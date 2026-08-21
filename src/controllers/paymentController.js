@@ -144,20 +144,15 @@ const verifyPayment = async (req, res, next) => {
   try {
     const { reference } = req.params;
 
-    // Find the payment in your DB
     const payment = await Payment.findOne({
       providerReference: reference,
       userId: req.user._id,
     });
 
     if (!payment) {
-      return res.status(404).json({
-        success: false,
-        message: 'Payment not found',
-      });
+      return res.status(404).json({ success: false, message: 'Payment not found' });
     }
 
-    // If already completed, return early
     if (payment.status === 'completed') {
       return res.status(200).json({
         success: true,
@@ -165,30 +160,12 @@ const verifyPayment = async (req, res, next) => {
         data: payment,
       });
     }
-        if (newStatus === 'completed') {
-      // ─── UPDATE PROPERTY STATUS ───
-      await updatePropertyOnPayment(payment);
 
-      // Wallet funding (keep your existing logic)
-      if (payment.type === 'wallet_fund') {
-        await User.findByIdAndUpdate(req.user._id, {
-          $inc: { walletBalance: payment.amount },
-        });
-      }
-
-      // Subscription (keep your existing logic)
-      if (payment.type === 'subscription') {
-        // TODO: activate subscription
-      }
-    }
-
-    // Verify with Paystack
+    // Just check status with Paystack — don't redo completion logic here,
+    // the webhook is the source of truth for marking completed + crediting.
     const verifyRes = await fetch(`${PAYSTACK_BASE}/transaction/verify/${reference}`, {
-      headers: {
-        Authorization: `Bearer ${PAYSTACK_SECRET}`,
-      },
+      headers: { Authorization: `Bearer ${PAYSTACK_SECRET}` },
     });
-
     const verifyData = await verifyRes.json();
 
     if (!verifyData.status) {
@@ -201,46 +178,16 @@ const verifyPayment = async (req, res, next) => {
     const tx = verifyData.data;
 
     if (tx.status === 'success') {
-      // Update payment as completed
-      payment.status = 'completed';
-      payment.completedAt = new Date();
-      payment.paidAt = tx.paid_at ? new Date(tx.paid_at) : new Date();
-      payment.channel = tx.channel;
-      payment.currency = tx.currency;
-      payment.fees = tx.fees ? tx.fees / 100 : 0;
-      payment.customerCode = tx.customer?.customer_code || null;
-      await payment.save();
-
-      // ─── BUSINESS LOGIC BASED ON TYPE ───
-      if (payment.type === 'property_purchase' && payment.propertyId) {
-        // Mark property as sold / create order
-        await Property.findByIdAndUpdate(payment.propertyId, {
-          $set: { status: 'sold', soldAt: new Date(), buyer: req.user._id },
-        });
-        // TODO: Notify seller
-      }
-
-      if (payment.type === 'wallet_fund') {
-        // TODO: Credit user's wallet
-        // await Wallet.findOneAndUpdate(
-        //   { userId: req.user._id },
-        //   { $inc: { balance: payment.amount } }
-        // );
-      }
-
-      if (payment.type === 'subscription') {
-        // TODO: Activate subscription
-      }
-
+      // Re-fetch in case the webhook already completed it in the meantime
+      const refreshed = await Payment.findById(payment._id);
       return res.status(200).json({
         success: true,
-        message: 'Payment verified and completed',
-        data: payment,
+        message: refreshed.status === 'completed' ? 'Payment verified and completed' : 'Payment verified, awaiting webhook confirmation',
+        data: refreshed,
       });
     }
 
-    // Payment failed or abandoned
-    payment.status = tx.status; // 'failed', 'abandoned', etc.
+    payment.status = tx.status;
     await payment.save();
 
     return res.status(400).json({
@@ -338,7 +285,6 @@ const paystackWebhook = async (req, res) => {
     const reference = tx.reference;
 
     try {
-      // Find and update payment
       const payment = await Payment.findOneAndUpdate(
         { providerReference: reference, status: { $ne: 'completed' } },
         {
@@ -355,17 +301,52 @@ const paystackWebhook = async (req, res) => {
         { new: true }
       );
 
-      if (payment) {
-        // ─── UPDATE PROPERTY STATUS (same helper) ───
-        await updatePropertyOnPayment(payment);
-        // Apply business logic
-        if (payment.type === 'property_purchase' && payment.propertyId) {
-          await Property.findByIdAndUpdate(payment.propertyId, {
-            $set: { status: 'sold', soldAt: new Date() },
-          });
-        }
-        console.log(`Webhook: Payment ${reference} completed`);
+      if (!payment) {
+        console.log(`Webhook: no pending payment found for ${reference} (already completed or missing)`);
+        return res.sendStatus(200);
       }
+
+      // Property purchase / rent: update property + credit seller's wallet
+      if (['purchase', 'rent', 'reservation'].includes(payment.type) && payment.propertyId) {
+        await updatePropertyOnPayment(payment);
+
+        const property = await Property.findById(payment.propertyId).select('listedBy listedByType');
+        const creditRecipientId = payment.recipientId || property?.listedBy;
+
+        if (creditRecipientId) {
+          const netAmount = payment.amount - (payment.platformFee || 0) - (payment.commissionAmount || 0);
+          const credit = Math.max(0, netAmount);
+
+          const updatedUser = await User.findByIdAndUpdate(
+            creditRecipientId,
+            { $inc: { walletBalance: credit } },
+            { new: true }
+          );
+
+          console.log('Webhook: credited wallet', {
+            recipientId: creditRecipientId,
+            credit,
+            paymentId: payment._id,
+            newBalance: updatedUser?.walletBalance,
+          });
+        } else {
+          console.log('Webhook: no recipient resolved for payment', payment._id);
+        }
+      }
+
+      // Wallet funding: credit the buyer's own wallet
+      if (payment.type === 'wallet_fund') {
+        await User.findByIdAndUpdate(payment.userId, {
+          $inc: { walletBalance: payment.amount },
+        });
+      }
+
+      // Subscription
+      if (payment.type === 'subscription') {
+        // TODO: activate subscription
+      }
+
+      console.log(`Webhook: Payment ${reference} completed`);
     } catch (err) {
       console.error('Webhook processing error:', err);
     }
