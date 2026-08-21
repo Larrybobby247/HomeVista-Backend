@@ -463,51 +463,59 @@ exports.confirmPayment = async (req, res, next) => {
       });
     }
 
-    // PAYOUTS: Only change status
+    // ─── PAYOUTS: Deduct from user's wallet ───
     if (payment.type === 'payout') {
+      const user = await User.findById(payment.userId);
+      if (!user) {
+        return res.status(404).json({ success: false, message: 'User not found' });
+      }
+
+      if ((user.walletBalance || 0) < payment.amount) {
+        return res.status(400).json({
+          success: false,
+          message: 'Insufficient wallet balance for payout',
+        });
+      }
+
+      // Deduct
+      await User.findByIdAndUpdate(payment.userId, {
+        $inc: { walletBalance: -payment.amount },
+      });
+
       payment.status = 'completed';
       payment.completedAt = new Date();
       await payment.save();
-      return res.status(200).json({ success: true, message: 'Payout confirmed', data: payment });
+
+      return res.status(200).json({
+        success: true,
+        message: 'Payout confirmed and deducted from wallet',
+        data: payment,
+      });
     }
 
-    // REGULAR PAYMENTS: Confirm and credit seller
+    // ─── REGULAR PAYMENTS: Credit seller ───
     payment.status = 'completed';
     payment.completedAt = new Date();
     await payment.save();
 
-    // Determine who gets credited.
-    // Prefer an explicit recipientId (e.g. admin-initiated payouts),
-    // but fall back to the property owner for purchase/sale-type payments.
     let creditRecipientId = payment.recipientId;
 
     if (!creditRecipientId && payment.propertyId) {
-  const property = await Property.findById(payment.propertyId).select('listedBy listedByType');
-  if (property?.listedBy) {
-    creditRecipientId = property.listedBy;
-  }
-}
+      const property = await Property.findById(payment.propertyId).select('listedBy');
+      if (property?.listedBy) {
+        creditRecipientId = property.listedBy;
+      }
+    }
 
     if (creditRecipientId) {
       const netAmount = payment.amount - (payment.platformFee || 0) - (payment.commissionAmount || 0);
       const credit = Math.max(0, netAmount);
 
-      console.log('Crediting wallet:', {
-        recipientId: creditRecipientId,
-        credit,
-        paymentId: payment._id,
-        source: payment.recipientId ? 'recipientId' : 'propertyOwner',
-      });
-
-      const updatedUser = await User.findByIdAndUpdate(
+      await User.findByIdAndUpdate(
         creditRecipientId,
         { $inc: { walletBalance: credit } },
         { new: true }
       );
-
-      console.log('Updated user wallet:', updatedUser?.walletBalance);
-    } else {
-      console.log('No recipient resolved (no recipientId, no property owner) — wallet not credited');
     }
 
     res.status(200).json({ success: true, message: 'Payment confirmed', data: payment });
