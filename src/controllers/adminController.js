@@ -455,38 +455,42 @@ exports.confirmPayment = async (req, res, next) => {
       return res.status(404).json({ success: false, message: 'Payment not found' });
     }
 
-    // PAYOUTS: Only change status. Do NOT credit any wallet.
+    // PAYOUTS: Only change status
     if (payment.type === 'payout') {
       payment.status = 'completed';
       payment.completedAt = new Date();
       await payment.save();
-
-      return res.status(200).json({
-        success: true,
-        message: 'Payout confirmed as sent to seller',
-        data: payment,
-      });
+      return res.status(200).json({ success: true, message: 'Payout confirmed', data: payment });
     }
 
-    // REGULAR PAYMENTS: Confirm as normal
-       
+    // REGULAR PAYMENTS: Confirm and credit seller
     payment.status = 'completed';
     payment.completedAt = new Date();
     await payment.save();
 
-    // Credit seller wallet with net amount (after fees)
+    // Credit seller wallet
     if (payment.recipientId) {
       const netAmount = (payment.netAmount || payment.amount) - (payment.platformFee || 0) - (payment.commissionAmount || 0);
-      await User.findByIdAndUpdate(payment.recipientId, {
-        $inc: { walletBalance: Math.max(0, netAmount) }
+      const credit = Math.max(0, netAmount);
+
+      console.log('Crediting wallet:', {
+        recipientId: payment.recipientId,
+        credit,
+        paymentId: payment._id,
       });
+
+      const updatedUser = await User.findByIdAndUpdate(
+        payment.recipientId,
+        { $inc: { walletBalance: credit } },
+        { new: true }
+      );
+
+      console.log('Updated user wallet:', updatedUser?.walletBalance);
+    } else {
+      console.log('No recipientId on payment — wallet not credited');
     }
 
-    res.status(200).json({
-      success: true,
-      message: 'Payment confirmed',
-      data: payment,
-    });
+    res.status(200).json({ success: true, message: 'Payment confirmed', data: payment });
   } catch (error) {
     next(error);
   }
