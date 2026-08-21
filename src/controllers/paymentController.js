@@ -9,11 +9,63 @@ const Payment = require('../models/Payment');
 const User = require('../models/User');
 const Property = require('../models/Property');
 
-const PAYSTACK_SECRET = process.env.PAYSTACK_SECRET_KEY; // sk_test_...
+const PAYSTACK_SECRET = process.env.PAYSTACK_SECRET_KEY;
 const PAYSTACK_BASE = 'https://api.paystack.co';
 
+/* ─── Shared helper: run AFTER a payment is confirmed completed ─── */
+const processCompletedPayment = async (payment) => {
+  // 1. Property purchase / rent / reservation
+  if (['purchase', 'rent', 'reservation'].includes(payment.type) && payment.propertyId) {
+    await updatePropertyOnPayment(payment);
+
+    // Credit seller / landlord / agent wallet
+    const property = await Property.findById(payment.propertyId).select('listedBy');
+    const recipientId = payment.recipientId || property?.listedBy;
+
+    if (recipientId) {
+      const platformFee = payment.platformFee || 0;
+      const commission = payment.commissionAmount || 0;
+      const netAmount = Math.max(0, payment.amount - platformFee - commission);
+
+      if (netAmount > 0) {
+        await User.findByIdAndUpdate(recipientId, {
+          $inc: { walletBalance: netAmount },
+        });
+      }
+    }
+  }
+
+  // 2. Wallet funding — credit the payer's own wallet
+  if (payment.type === 'wallet_fund') {
+    await User.findByIdAndUpdate(payment.userId, {
+      $inc: { walletBalance: payment.amount },
+    });
+  }
+
+  // 3. Subscription
+  if (payment.type === 'subscription') {
+    // TODO: activate subscription
+  }
+};
+
+const updatePropertyOnPayment = async (payment) => {
+  if (!payment.propertyId) return;
+  if (!['purchase', 'rent', 'reservation'].includes(payment.type)) return;
+
+  const property = await Property.findById(payment.propertyId);
+  if (!property) return;
+
+  const isRental = property.listingType === 'for_rent' || property.listingType === 'rent';
+  property.status = isRental ? 'rented' : 'sold';
+  property.buyer = payment.userId;
+  property.soldAt = new Date();
+  property.paymentReference = payment.providerReference;
+
+  await property.save();
+};
+
 /**
- * @desc    Initialize payment (with Paystack)
+ * @desc    Initialize payment
  * @route   POST /api/payments/initialize
  * @access  Private
  */
@@ -35,12 +87,10 @@ const initializePayment = async (req, res, next) => {
       });
     }
 
-    // Generate unique Paystack reference
     const timestamp = Date.now();
     const randomStr = Math.random().toString(36).slice(2, 7).toUpperCase();
     const paystackRef = `HV_${type.toUpperCase()}_${timestamp}_${randomStr}`;
 
-    // Call Paystack to initialize
     const paystackRes = await fetch(`${PAYSTACK_BASE}/transaction/initialize`, {
       method: 'POST',
       headers: {
@@ -49,12 +99,11 @@ const initializePayment = async (req, res, next) => {
       },
       body: JSON.stringify({
         email: req.user.email,
-        amount: Math.round(amount * 100), // Convert to kobo
+        amount: Math.round(amount * 100),
         reference: paystackRef,
-        callback_url: `${process.env.FRONTEND_URL}/payments/verify`, // fallback for web
+        callback_url: `${process.env.FRONTEND_URL}/payments/verify`,
         metadata: {
           user_id: req.user._id.toString(),
-          payment_id: null, // will update after create
           type,
           property_id: propertyId || null,
           description: description || '',
@@ -76,7 +125,6 @@ const initializePayment = async (req, res, next) => {
       });
     }
 
-    // Create payment record in your DB
     const payment = await Payment.create({
       userId: req.user._id,
       propertyId: propertyId || null,
@@ -89,9 +137,6 @@ const initializePayment = async (req, res, next) => {
       authorizationUrl: paystackData.data.authorization_url,
       accessCode: paystackData.data.access_code,
     });
-
-    // Update Paystack metadata with the payment ID (for webhook matching)
-    // (Optional — Paystack doesn't let you update after init, but reference is enough)
 
     res.status(201).json({
       success: true,
@@ -110,33 +155,8 @@ const initializePayment = async (req, res, next) => {
   }
 };
 
-const updatePropertyOnPayment = async (payment) => {
-  // Only run for property-related payments that have a propertyId
-  if (!payment.propertyId) return;
-  if (!['purchase', 'rent', 'reservation'].includes(payment.type)) return;
-
-  const property = await Property.findById(payment.propertyId);
-  if (!property) return;
-
-  // Determine new status based on how the property was listed
-  // If your property model uses 'listingType' (for_sale / for_rent):
-  const isRental = property.listingType === 'for_rent' || property.listingType === 'rent';
-  
-  // Or if you determine it from the payment type:
-  // const isRental = payment.type === 'rent';
-
-  property.status = isRental ? 'rented' : 'sold';
-  
-  // Record who bought/rented it
-  property.buyer = payment.userId;      // or property.tenant = payment.userId
-  property.soldAt = new Date();         // or property.rentedAt
-  property.paymentReference = payment.providerReference;
-
-  await property.save();
-};
-
 /**
- * @desc    Verify payment (with Paystack)
+ * @desc    Verify payment
  * @route   GET /api/payments/verify/:reference
  * @access  Private
  */
@@ -144,7 +164,6 @@ const verifyPayment = async (req, res, next) => {
   try {
     const { reference } = req.params;
 
-    // Find the payment in your DB
     const payment = await Payment.findOne({
       providerReference: reference,
       userId: req.user._id,
@@ -157,7 +176,6 @@ const verifyPayment = async (req, res, next) => {
       });
     }
 
-    // If already completed, return early
     if (payment.status === 'completed') {
       return res.status(200).json({
         success: true,
@@ -165,24 +183,7 @@ const verifyPayment = async (req, res, next) => {
         data: payment,
       });
     }
-        if (newStatus === 'completed') {
-      // ─── UPDATE PROPERTY STATUS ───
-      await updatePropertyOnPayment(payment);
 
-      // Wallet funding (keep your existing logic)
-      if (payment.type === 'wallet_fund') {
-        await User.findByIdAndUpdate(req.user._id, {
-          $inc: { walletBalance: payment.amount },
-        });
-      }
-
-      // Subscription (keep your existing logic)
-      if (payment.type === 'subscription') {
-        // TODO: activate subscription
-      }
-    }
-
-    // Verify with Paystack
     const verifyRes = await fetch(`${PAYSTACK_BASE}/transaction/verify/${reference}`, {
       headers: {
         Authorization: `Bearer ${PAYSTACK_SECRET}`,
@@ -201,7 +202,7 @@ const verifyPayment = async (req, res, next) => {
     const tx = verifyData.data;
 
     if (tx.status === 'success') {
-      // Update payment as completed
+      // Mark payment completed
       payment.status = 'completed';
       payment.completedAt = new Date();
       payment.paidAt = tx.paid_at ? new Date(tx.paid_at) : new Date();
@@ -211,26 +212,8 @@ const verifyPayment = async (req, res, next) => {
       payment.customerCode = tx.customer?.customer_code || null;
       await payment.save();
 
-      // ─── BUSINESS LOGIC BASED ON TYPE ───
-      if (payment.type === 'property_purchase' && payment.propertyId) {
-        // Mark property as sold / create order
-        await Property.findByIdAndUpdate(payment.propertyId, {
-          $set: { status: 'sold', soldAt: new Date(), buyer: req.user._id },
-        });
-        // TODO: Notify seller
-      }
-
-      if (payment.type === 'wallet_fund') {
-        // TODO: Credit user's wallet
-        // await Wallet.findOneAndUpdate(
-        //   { userId: req.user._id },
-        //   { $inc: { balance: payment.amount } }
-        // );
-      }
-
-      if (payment.type === 'subscription') {
-        // TODO: Activate subscription
-      }
+      // ─── Run business logic (wallet updates, property status, etc.) ───
+      await processCompletedPayment(payment);
 
       return res.status(200).json({
         success: true,
@@ -239,8 +222,8 @@ const verifyPayment = async (req, res, next) => {
       });
     }
 
-    // Payment failed or abandoned
-    payment.status = tx.status; // 'failed', 'abandoned', etc.
+    // Failed / abandoned
+    payment.status = tx.status;
     await payment.save();
 
     return res.status(400).json({
@@ -265,15 +248,14 @@ const getPaymentHistory = async (req, res, next) => {
       .populate('userId', 'firstName lastName email')
       .sort({ createdAt: -1 });
 
-    // Map to the shape your frontend expects
     const mapped = payments.map((p) => ({
       _id: p._id,
       propertyId: p.propertyId?._id?.toString() || p.propertyId,
       propertyTitle: p.propertyId?.title || p.description || 'Property Transaction',
       propertyImage: p.propertyId?.images?.[0]?.url || null,
       amount: p.amount,
-      status: p.status, // 'pending', 'completed', 'failed', etc.
-      type: p.type,     // 'purchase', 'rent', 'wallet_fund', etc.
+      status: p.status,
+      type: p.type,
       paymentMethod: p.method || p.channel || 'card',
       createdAt: p.createdAt,
       completedAt: p.completedAt,
@@ -306,10 +288,10 @@ const getWalletBalance = async (req, res, next) => {
 
     res.status(200).json({
       success: true,
-      data: { 
+      data: {
         balance: user.walletBalance || 0,
-        amount: user.walletBalance || 0 
-      }
+        amount: user.walletBalance || 0,
+      },
     });
   } catch (error) {
     next(error);
@@ -355,51 +337,14 @@ const paystackWebhook = async (req, res) => {
       );
 
       if (!payment) {
-        console.log(`Webhook: no pending payment found for ${reference} (already completed or missing)`);
+        console.log(`Webhook: no pending payment found for ${reference}`);
         return res.sendStatus(200);
       }
 
-      // Property purchase / rent: update property + credit seller's wallet
-      if (['purchase', 'rent', 'reservation'].includes(payment.type) && payment.propertyId) {
-        await updatePropertyOnPayment(payment);
+      // Run the SAME business logic as verifyPayment
+      await processCompletedPayment(payment);
 
-        const property = await Property.findById(payment.propertyId).select('listedBy listedByType');
-        const creditRecipientId = payment.recipientId || property?.listedBy;
-
-        if (creditRecipientId) {
-          const netAmount = payment.amount - (payment.platformFee || 0) - (payment.commissionAmount || 0);
-          const credit = Math.max(0, netAmount);
-
-          const updatedUser = await User.findByIdAndUpdate(
-            creditRecipientId,
-            { $inc: { walletBalance: credit } },
-            { new: true }
-          );
-
-          console.log('Webhook: credited wallet', {
-            recipientId: creditRecipientId,
-            credit,
-            paymentId: payment._id,
-            newBalance: updatedUser?.walletBalance,
-          });
-        } else {
-          console.log('Webhook: no recipient resolved for payment', payment._id);
-        }
-      }
-
-      // Wallet funding: credit the buyer's own wallet
-      if (payment.type === 'wallet_fund') {
-        await User.findByIdAndUpdate(payment.userId, {
-          $inc: { walletBalance: payment.amount },
-        });
-      }
-
-      // Subscription
-      if (payment.type === 'subscription') {
-        // TODO: activate subscription
-      }
-
-      console.log(`Webhook: Payment ${reference} completed`);
+      console.log(`Webhook: Payment ${reference} processed`);
     } catch (err) {
       console.error('Webhook processing error:', err);
     }
