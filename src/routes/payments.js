@@ -378,15 +378,30 @@ router.get("/wallet/transactions", protect, async (req, res, next) => {
 
 
 
+
+
 router.post('/payouts', protect, async (req, res, next) => {
   try {
     const { amount, netAmount, platformFee, bankName, accountNumber, accountName, currency } = req.body;
+    const userId = req.user._id;
 
+    // CHECK: Does user have enough balance?
+    const user = await User.findById(userId);
+    if (!user || (user.walletBalance || 0) < amount) {
+      return res.status(400).json({ success: false, message: 'Insufficient wallet balance' });
+    }
+
+    // DEDUCT from wallet immediately
+    user.walletBalance = (user.walletBalance || 0) - amount;
+    await user.save();
+
+    // Create payout record
     const payout = await Payment.create({
-      userId: req.user._id,           // who requested it
-      recipientId: req.user._id,      // who receives it (same person)
+      userId,
+      recipientId: userId,
       type: 'payout',
-      amount,              // what seller receives
+      amount: amount,           // gross amount that left wallet
+      netAmount,
       platformFee,
       status: 'pending',
       method: 'bank_transfer',
@@ -399,10 +414,7 @@ router.post('/payouts', protect, async (req, res, next) => {
       },
     });
 
-    res.status(201).json({
-      success: true,
-      data: payout,
-    });
+    res.status(201).json({ success: true, data: payout });
   } catch (error) {
     next(error);
   }
