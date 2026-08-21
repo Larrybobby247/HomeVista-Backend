@@ -304,31 +304,12 @@ exports.getWalletBalance = async (req, res, next) => {
       return res.status(404).json({ success: false, message: 'User not found' });
     }
 
-    // Property earnings (sold/rented/leased)
-    const soldProperties = await Property.find({
-      listedBy: req.user._id,
-      status: { $in: ['sold', 'rented', 'leased'] }
-    });
-    const propertyEarnings = soldProperties.reduce((sum, p) => sum + (Number(p.price) || 0), 0);
-
-    // Completed transaction earnings (exclude payouts)
-    const completedTxs = await Payment.find({
-      $or: [{ recipientId: req.user._id }, { userId: req.user._id }],
-      status: { $in: ['completed', 'success'] },
-      type: { $ne: 'payout' }
-    });
-    const txEarnings = completedTxs.reduce((sum, t) => {
-      const amount = Number(t.amount) || 0;
-      const fee = Number(t.platformFee) || 0;
-      const commission = Number(t.commissionAmount) || 0;
-      return sum + Math.max(0, amount - fee - commission);
-    }, 0);
-
-    const totalBalance = (user.walletBalance || 0) + propertyEarnings + txEarnings;
-
     res.status(200).json({
       success: true,
-      data: { balance: totalBalance, amount: totalBalance }
+      data: { 
+        balance: user.walletBalance || 0,
+        amount: user.walletBalance || 0 
+      }
     });
   } catch (error) {
     next(error);

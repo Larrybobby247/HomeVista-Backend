@@ -469,12 +469,18 @@ exports.confirmPayment = async (req, res, next) => {
     }
 
     // REGULAR PAYMENTS: Confirm as normal
+       
     payment.status = 'completed';
     payment.completedAt = new Date();
     await payment.save();
 
-    // (Optional) Credit seller wallet for sales/rent here
-    // if (payment.recipientId) { ... }
+    // Credit seller wallet with net amount (after fees)
+    if (payment.recipientId) {
+      const netAmount = (payment.netAmount || payment.amount) - (payment.platformFee || 0) - (payment.commissionAmount || 0);
+      await User.findByIdAndUpdate(payment.recipientId, {
+        $inc: { walletBalance: Math.max(0, netAmount) }
+      });
+    }
 
     res.status(200).json({
       success: true,
