@@ -378,20 +378,43 @@ router.get("/wallet/transactions", protect, async (req, res, next) => {
 
 
 
-
-
 router.post('/payouts', protect, async (req, res, next) => {
   try {
     const { amount, netAmount, platformFee, bankName, accountNumber, accountName, currency } = req.body;
     const userId = req.user._id;
 
-    // CHECK: Does user have enough balance?
     const user = await User.findById(userId);
-    if (!user || (user.walletBalance || 0) < amount) {
-      return res.status(400).json({ success: false, message: 'Insufficient wallet balance' });
+    if (!user) return res.status(404).json({ success: false, message: 'User not found' });
+
+    // Calculate available balance (same formula as getWalletBalance)
+    const soldProperties = await Property.find({
+      listedBy: userId,
+      status: { $in: ['sold', 'rented', 'leased'] }
+    });
+    const propertyEarnings = soldProperties.reduce((sum, p) => sum + (Number(p.price) || 0), 0);
+
+    const completedTxs = await Payment.find({
+      $or: [{ recipientId: userId }, { userId: userId }],
+      status: { $in: ['completed', 'success'] },
+      type: { $ne: 'payout' }
+    });
+    const txEarnings = completedTxs.reduce((sum, t) => {
+      const a = Number(t.amount) || 0;
+      const f = Number(t.platformFee) || 0;
+      const c = Number(t.commissionAmount) || 0;
+      return sum + Math.max(0, a - f - c);
+    }, 0);
+
+    const availableBalance = (user.walletBalance || 0) + propertyEarnings + txEarnings;
+
+    if (availableBalance < amount) {
+      return res.status(400).json({ 
+        success: false, 
+        message: `Insufficient balance. Available: ${availableBalance}, Requested: ${amount}` 
+      });
     }
 
-    // DEDUCT from wallet immediately
+    // Deduct from walletBalance (this may go negative if earnings > wallet, which is fine)
     user.walletBalance = (user.walletBalance || 0) - amount;
     await user.save();
 
@@ -400,18 +423,14 @@ router.post('/payouts', protect, async (req, res, next) => {
       userId,
       recipientId: userId,
       type: 'payout',
-      amount: amount,           // gross amount that left wallet
+      amount: amount,
       netAmount,
       platformFee,
       status: 'pending',
       method: 'bank_transfer',
       description: `Payout to ${bankName} ••••${accountNumber.slice(-4)}`,
       currency: currency || 'NGN',
-      recipientBankDetails: {
-        bankName,
-        accountNumber,
-        accountName,
-      },
+      recipientBankDetails: { bankName, accountNumber, accountName },
     });
 
     res.status(201).json({ success: true, data: payout });
@@ -419,7 +438,6 @@ router.post('/payouts', protect, async (req, res, next) => {
     next(error);
   }
 });
-
 // ─────────────────────────────────────────────────────────────────
 // POST /api/payments/wallet/fund
 // ─────────────────────────────────────────────────────────────────

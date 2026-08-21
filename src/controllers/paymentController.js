@@ -297,18 +297,38 @@ const getPaymentHistory = async (req, res, next) => {
  * @route   GET /api/payments/wallet/balance
  * @access  Private
  */
-const getWalletBalance = async (req, res, next) => {
+exports.getWalletBalance = async (req, res, next) => {
   try {
-    const completed = await Payment.aggregate([
-      { $match: { userId: req.user._id, status: 'completed', type: 'wallet_fund' } },
-      { $group: { _id: null, total: { $sum: '$amount' } } },
-    ]);
+    const user = await User.findById(req.user._id);
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
 
-    const balance = completed.length > 0 ? completed[0].total : 0;
+    // Property earnings (sold/rented/leased)
+    const soldProperties = await Property.find({
+      listedBy: req.user._id,
+      status: { $in: ['sold', 'rented', 'leased'] }
+    });
+    const propertyEarnings = soldProperties.reduce((sum, p) => sum + (Number(p.price) || 0), 0);
+
+    // Completed transaction earnings (exclude payouts)
+    const completedTxs = await Payment.find({
+      $or: [{ recipientId: req.user._id }, { userId: req.user._id }],
+      status: { $in: ['completed', 'success'] },
+      type: { $ne: 'payout' }
+    });
+    const txEarnings = completedTxs.reduce((sum, t) => {
+      const amount = Number(t.amount) || 0;
+      const fee = Number(t.platformFee) || 0;
+      const commission = Number(t.commissionAmount) || 0;
+      return sum + Math.max(0, amount - fee - commission);
+    }, 0);
+
+    const totalBalance = (user.walletBalance || 0) + propertyEarnings + txEarnings;
 
     res.status(200).json({
       success: true,
-      data: { balance },
+      data: { balance: totalBalance, amount: totalBalance }
     });
   } catch (error) {
     next(error);
