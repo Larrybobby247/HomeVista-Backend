@@ -144,15 +144,20 @@ const verifyPayment = async (req, res, next) => {
   try {
     const { reference } = req.params;
 
+    // Find the payment in your DB
     const payment = await Payment.findOne({
       providerReference: reference,
       userId: req.user._id,
     });
 
     if (!payment) {
-      return res.status(404).json({ success: false, message: 'Payment not found' });
+      return res.status(404).json({
+        success: false,
+        message: 'Payment not found',
+      });
     }
 
+    // If already completed, return early
     if (payment.status === 'completed') {
       return res.status(200).json({
         success: true,
@@ -160,12 +165,30 @@ const verifyPayment = async (req, res, next) => {
         data: payment,
       });
     }
+        if (newStatus === 'completed') {
+      // ─── UPDATE PROPERTY STATUS ───
+      await updatePropertyOnPayment(payment);
 
-    // Just check status with Paystack — don't redo completion logic here,
-    // the webhook is the source of truth for marking completed + crediting.
+      // Wallet funding (keep your existing logic)
+      if (payment.type === 'wallet_fund') {
+        await User.findByIdAndUpdate(req.user._id, {
+          $inc: { walletBalance: payment.amount },
+        });
+      }
+
+      // Subscription (keep your existing logic)
+      if (payment.type === 'subscription') {
+        // TODO: activate subscription
+      }
+    }
+
+    // Verify with Paystack
     const verifyRes = await fetch(`${PAYSTACK_BASE}/transaction/verify/${reference}`, {
-      headers: { Authorization: `Bearer ${PAYSTACK_SECRET}` },
+      headers: {
+        Authorization: `Bearer ${PAYSTACK_SECRET}`,
+      },
     });
+
     const verifyData = await verifyRes.json();
 
     if (!verifyData.status) {
@@ -178,16 +201,46 @@ const verifyPayment = async (req, res, next) => {
     const tx = verifyData.data;
 
     if (tx.status === 'success') {
-      // Re-fetch in case the webhook already completed it in the meantime
-      const refreshed = await Payment.findById(payment._id);
+      // Update payment as completed
+      payment.status = 'completed';
+      payment.completedAt = new Date();
+      payment.paidAt = tx.paid_at ? new Date(tx.paid_at) : new Date();
+      payment.channel = tx.channel;
+      payment.currency = tx.currency;
+      payment.fees = tx.fees ? tx.fees / 100 : 0;
+      payment.customerCode = tx.customer?.customer_code || null;
+      await payment.save();
+
+      // ─── BUSINESS LOGIC BASED ON TYPE ───
+      if (payment.type === 'property_purchase' && payment.propertyId) {
+        // Mark property as sold / create order
+        await Property.findByIdAndUpdate(payment.propertyId, {
+          $set: { status: 'sold', soldAt: new Date(), buyer: req.user._id },
+        });
+        // TODO: Notify seller
+      }
+
+      if (payment.type === 'wallet_fund') {
+        // TODO: Credit user's wallet
+        // await Wallet.findOneAndUpdate(
+        //   { userId: req.user._id },
+        //   { $inc: { balance: payment.amount } }
+        // );
+      }
+
+      if (payment.type === 'subscription') {
+        // TODO: Activate subscription
+      }
+
       return res.status(200).json({
         success: true,
-        message: refreshed.status === 'completed' ? 'Payment verified and completed' : 'Payment verified, awaiting webhook confirmation',
-        data: refreshed,
+        message: 'Payment verified and completed',
+        data: payment,
       });
     }
 
-    payment.status = tx.status;
+    // Payment failed or abandoned
+    payment.status = tx.status; // 'failed', 'abandoned', etc.
     await payment.save();
 
     return res.status(400).json({
