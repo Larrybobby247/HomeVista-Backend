@@ -455,6 +455,14 @@ exports.confirmPayment = async (req, res, next) => {
       return res.status(404).json({ success: false, message: 'Payment not found' });
     }
 
+    if (payment.status === 'completed') {
+      return res.status(200).json({
+        success: true,
+        message: 'Payment already confirmed',
+        data: payment,
+      });
+    }
+
     // PAYOUTS: Only change status
     if (payment.type === 'payout') {
       payment.status = 'completed';
@@ -468,26 +476,38 @@ exports.confirmPayment = async (req, res, next) => {
     payment.completedAt = new Date();
     await payment.save();
 
-    // Credit seller wallet
-    if (payment.recipientId) {
-      const netAmount = (payment.netAmount || payment.amount) - (payment.platformFee || 0) - (payment.commissionAmount || 0);
+    // Determine who gets credited.
+    // Prefer an explicit recipientId (e.g. admin-initiated payouts),
+    // but fall back to the property owner for purchase/sale-type payments.
+    let creditRecipientId = payment.recipientId;
+
+    if (!creditRecipientId && payment.propertyId) {
+  const property = await Property.findById(payment.propertyId).select('listedBy listedByType');
+  if (property?.listedBy) {
+    creditRecipientId = property.listedBy;
+  }
+}
+
+    if (creditRecipientId) {
+      const netAmount = payment.amount - (payment.platformFee || 0) - (payment.commissionAmount || 0);
       const credit = Math.max(0, netAmount);
 
       console.log('Crediting wallet:', {
-        recipientId: payment.recipientId,
+        recipientId: creditRecipientId,
         credit,
         paymentId: payment._id,
+        source: payment.recipientId ? 'recipientId' : 'propertyOwner',
       });
 
       const updatedUser = await User.findByIdAndUpdate(
-        payment.recipientId,
+        creditRecipientId,
         { $inc: { walletBalance: credit } },
         { new: true }
       );
 
       console.log('Updated user wallet:', updatedUser?.walletBalance);
     } else {
-      console.log('No recipientId on payment — wallet not credited');
+      console.log('No recipient resolved (no recipientId, no property owner) — wallet not credited');
     }
 
     res.status(200).json({ success: true, message: 'Payment confirmed', data: payment });
