@@ -297,7 +297,7 @@ const getPaymentHistory = async (req, res, next) => {
  * @route   GET /api/payments/wallet/balance
  * @access  Private
  */
-exports.getWalletBalance = async (req, res, next) => {
+const getWalletBalance = async (req, res, next) => {
   try {
     const user = await User.findById(req.user._id);
     if (!user) {
