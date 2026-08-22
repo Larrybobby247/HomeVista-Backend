@@ -14,13 +14,9 @@ const Property = require("../models/Property");
 const PAYSTACK_SECRET = process.env.PAYSTACK_SECRET_KEY;
 const PAYSTACK_BASE = "https://api.paystack.co";
 
-// routes/payment.js or server.js
 const { Resend } = require('resend');
 const resend = new Resend(process.env.RESEND_API_KEY);
 
-// ─────────────────────────────────────────────────────────────────
-// HELPER: Call Paystack API
-// ─────────────────────────────────────────────────────────────────
 const paystackFetch = (endpoint, options = {}) => {
   return fetch(`${PAYSTACK_BASE}${endpoint}`, {
     ...options,
@@ -30,6 +26,38 @@ const paystackFetch = (endpoint, options = {}) => {
       ...options.headers,
     },
   });
+};
+
+// ─────────────────────────────────────────────────────────────────
+// HELPER: Credit seller on successful property sale
+// ─────────────────────────────────────────────────────────────────
+const creditSellerOnSale = async (payment) => {
+  if (!payment.propertyId) return;
+  if (!["reservation", "rent", "purchase"].includes(payment.type)) return;
+
+  const property = await Property.findById(payment.propertyId);
+  if (!property) return;
+
+  // Update property status
+  const isRental = payment.type === "rent" || property.listingType === "for_rent" || property.status === "for_rent";
+  property.status = isRental ? "rented" : "sold";
+  property.buyer = payment.userId;
+  property.soldAt = new Date();
+  await property.save();
+
+  // Credit seller wallet
+  const sellerId = property.listedBy;
+  if (sellerId) {
+    const netAmount = payment.amount - (payment.platformFee || 0) - (payment.commissionAmount || 0);
+    const credit = Math.max(0, netAmount);
+
+    await User.findByIdAndUpdate(
+      sellerId,
+      { $inc: { walletBalance: credit } },
+      { new: true }
+    );
+    console.log(`💰 Credited ${credit} to seller ${sellerId}`);
+  }
 };
 
 // ─────────────────────────────────────────────────────────────────
@@ -46,10 +74,8 @@ router.post("/initialize", protect, async (req, res, next) => {
       });
     }
 
-    // Generate unique reference
     const reference = `HV_${Date.now()}_${Math.random().toString(36).slice(2, 8).toUpperCase()}`;
 
-    // Initialize with Paystack
     const response = await paystackFetch("/transaction/initialize", {
       method: "POST",
       body: JSON.stringify({
@@ -95,7 +121,6 @@ router.post("/initialize", protect, async (req, res, next) => {
       });
     }
 
-    // Save payment record
     const payment = await Payment.create({
       userId: req.user._id,
       propertyId: propertyId || null,
@@ -142,7 +167,6 @@ router.get("/verify/:reference", protect, async (req, res, next) => {
       });
     }
 
-    // Already completed? Return early
     if (payment.status === "completed") {
       return res.status(200).json({
         success: true,
@@ -151,7 +175,6 @@ router.get("/verify/:reference", protect, async (req, res, next) => {
       });
     }
 
-    // Verify with Paystack
     const response = await paystackFetch(`/transaction/verify/${reference}`);
     const verifyData = await response.json();
 
@@ -164,14 +187,12 @@ router.get("/verify/:reference", protect, async (req, res, next) => {
 
     const tx = verifyData.data;
 
-    // Map Paystack status to your schema
     let newStatus = "pending";
     if (tx.status === "success") newStatus = "completed";
     else if (tx.status === "failed") newStatus = "failed";
     else if (tx.status === "abandoned") newStatus = "cancelled";
     else newStatus = "processing";
 
-    // Update payment record
     payment.status = newStatus;
     payment.providerResponse = tx;
     if (tx.channel) payment.method = tx.channel;
@@ -180,22 +201,8 @@ router.get("/verify/:reference", protect, async (req, res, next) => {
 
     // ─── BUSINESS LOGIC ON SUCCESS ───
     if (newStatus === "completed") {
-      // Property purchase / reservation / rent
-      if (
-        payment.propertyId &&
-        ["reservation", "rent", "purchase"].includes(payment.type)
-      ) {
-        const property = await Property.findById(payment.propertyId);
-        if (property) {
-          // Determine correct status: rented for rentals, sold for sales
-          const isRental =
-            payment.type === "rent" || property.status === "for_rent";
-          property.status = isRental ? "rented" : "sold";
-          property.buyer = payment.userId;
-          property.soldAt = new Date();
-          await property.save();
-        }
-      }
+      // <-- FIXED: Credit seller for property sales
+      await creditSellerOnSale(payment);
 
       // Wallet funding
       if (payment.type === "wallet_fund") {
@@ -204,7 +211,7 @@ router.get("/verify/:reference", protect, async (req, res, next) => {
         });
       }
 
-      // Subscription activation
+      // Subscription
       if (payment.type === "subscription") {
         // TODO: activate user subscription
       }
@@ -235,12 +242,12 @@ router.get("/history", protect, async (req, res, next) => {
 
     if (type) {
       const typeMap = {
-  purchase: ["purchase", "property_purchase"],
-  deposit: ["wallet_fund"],
-  rent: ["rent"],
-  fee: ["service_charge", "agency_fee", "legal_fee", "caution_fee"],
-  payout: ["payout"],
-};
+        purchase: ["purchase", "property_purchase"],
+        deposit: ["wallet_fund"],
+        rent: ["rent"],
+        fee: ["service_charge", "agency_fee", "legal_fee", "caution_fee"],
+        payout: ["payout"],
+      };
       query.type = typeMap[type] || type;
     }
 
@@ -262,27 +269,25 @@ router.get("/history", protect, async (req, res, next) => {
       const seller = property?.listedBy;
 
       return {
-  _id: p._id,
-  propertyId: property?._id?.toString() || p.propertyId?.toString() || "",
-  propertyTitle: property?.title || p.description || "Property Transaction",
-  propertyImage: property?.images?.[0]?.url || null,
-  amount: p.amount,
-  status: p.status,
-  type: p.type === "property_purchase" ? "purchase" : p.type,
-  paymentMethod: p.method || p.channel || "card",
-  createdAt: p.createdAt,
-  completedAt: p.completedAt,
-  transactionRef: p.providerReference || p._id.toString(),
-  sellerName: seller?.fullName || `${seller?.firstName || ""} ${seller?.lastName || ""}`.trim() || "HomeVista",
-  description: p.description,
-  currency: p.currency || "NGN",
-  
-  // ADD THESE for payouts
-  bankName: p.recipientBankDetails?.bankName,
-  accountNumber: p.recipientBankDetails?.accountNumber,
-  accountName: p.recipientBankDetails?.accountName,
-  platformFee: p.platformFee,
-};
+        _id: p._id,
+        propertyId: property?._id?.toString() || p.propertyId?.toString() || "",
+        propertyTitle: property?.title || p.description || "Property Transaction",
+        propertyImage: property?.images?.[0]?.url || null,
+        amount: p.amount,
+        status: p.status,
+        type: p.type === "property_purchase" ? "purchase" : p.type,
+        paymentMethod: p.method || p.channel || "card",
+        createdAt: p.createdAt,
+        completedAt: p.completedAt,
+        transactionRef: p.providerReference || p._id.toString(),
+        sellerName: seller?.fullName || `${seller?.firstName || ""} ${seller?.lastName || ""}`.trim() || "HomeVista",
+        description: p.description,
+        currency: p.currency || "NGN",
+        bankName: p.recipientBankDetails?.bankName,
+        accountNumber: p.recipientBankDetails?.accountNumber,
+        accountName: p.recipientBankDetails?.accountName,
+        platformFee: p.platformFee,
+      };
     });
 
     res.status(200).json({
@@ -376,8 +381,9 @@ router.get("/wallet/transactions", protect, async (req, res, next) => {
   }
 });
 
-
-
+// ─────────────────────────────────────────────────────────────────
+// POST /api/payments/payouts  (Request a withdrawal)
+// ─────────────────────────────────────────────────────────────────
 router.post('/payouts', protect, async (req, res, next) => {
   try {
     const { amount, netAmount, platformFee, bankName, accountNumber, accountName, currency } = req.body;
@@ -386,26 +392,8 @@ router.post('/payouts', protect, async (req, res, next) => {
     const user = await User.findById(userId);
     if (!user) return res.status(404).json({ success: false, message: 'User not found' });
 
-    // Calculate available balance (same formula as getWalletBalance)
-    const soldProperties = await Property.find({
-      listedBy: userId,
-      status: { $in: ['sold', 'rented', 'leased'] }
-    });
-    const propertyEarnings = soldProperties.reduce((sum, p) => sum + (Number(p.price) || 0), 0);
-
-    const completedTxs = await Payment.find({
-      $or: [{ recipientId: userId }, { userId: userId }],
-      status: { $in: ['completed', 'success'] },
-      type: { $ne: 'payout' }
-    });
-    const txEarnings = completedTxs.reduce((sum, t) => {
-      const a = Number(t.amount) || 0;
-      const f = Number(t.platformFee) || 0;
-      const c = Number(t.commissionAmount) || 0;
-      return sum + Math.max(0, a - f - c);
-    }, 0);
-
-    const availableBalance = (user.walletBalance || 0) + propertyEarnings + txEarnings;
+    // <-- FIXED: Use walletBalance directly. That's the only real money.
+    const availableBalance = user.walletBalance || 0;
 
     if (availableBalance < amount) {
       return res.status(400).json({ 
@@ -414,16 +402,15 @@ router.post('/payouts', protect, async (req, res, next) => {
       });
     }
 
-    // Deduct from walletBalance (this may go negative if earnings > wallet, which is fine)
-    user.walletBalance = (user.walletBalance || 0) - amount;
-    await user.save();
+    // <-- FIXED: Do NOT deduct here. Wait for admin confirmation.
+    // (If you want instant deduction, remove it from admin controller instead)
 
     // Create payout record
     const payout = await Payment.create({
       userId,
       recipientId: userId,
       type: 'payout',
-      amount: amount,
+      amount,
       netAmount,
       platformFee,
       status: 'pending',
@@ -438,6 +425,7 @@ router.post('/payouts', protect, async (req, res, next) => {
     next(error);
   }
 });
+
 // ─────────────────────────────────────────────────────────────────
 // POST /api/payments/wallet/fund
 // ─────────────────────────────────────────────────────────────────
@@ -456,7 +444,6 @@ router.post("/wallet/fund", protect, async (req, res, next) => {
 
 // ─────────────────────────────────────────────────────────────────
 // PAYSTACK WEBHOOK
-// Must be mounted in app.js BEFORE express.json() with raw body parser
 // ─────────────────────────────────────────────────────────────────
 router.post("/webhook", async (req, res) => {
   const hash = crypto
@@ -489,25 +476,8 @@ router.post("/webhook", async (req, res) => {
       );
 
       if (payment) {
-        // ─── UPDATE PROPERTY STATUS (FIXED: was commented out) ───
-        if (
-          payment.propertyId &&
-          ["reservation", "rent", "purchase"].includes(payment.type)
-        ) {
-          const property = await Property.findById(payment.propertyId);
-          if (
-            property &&
-            property.status !== "sold" &&
-            property.status !== "rented"
-          ) {
-            const isRental =
-              payment.type === "rent" || property.status === "for_rent";
-            property.status = isRental ? "rented" : "sold";
-            property.buyer = payment.userId;
-            property.soldAt = new Date();
-            await property.save();
-          }
-        }
+        // <-- FIXED: Use shared helper to credit seller
+        await creditSellerOnSale(payment);
 
         // Wallet funding
         if (payment.type === "wallet_fund") {
@@ -516,9 +486,7 @@ router.post("/webhook", async (req, res) => {
           });
         }
 
-        console.log(
-          `Webhook: Payment ${reference} marked completed, property updated`,
-        );
+        console.log(`Webhook: Payment ${reference} completed`);
       }
     } catch (err) {
       console.error("Webhook error:", err);
@@ -528,39 +496,45 @@ router.post("/webhook", async (req, res) => {
   res.sendStatus(200);
 });
 
-// Temporary callback page so WebView doesn't crash on deep links
+// Temporary callback page
 router.get("/callback-page", (req, res) => {
   const ref = req.query.reference || req.query.trxref || "";
-  res.send(`
-    <!DOCTYPE html>
-    <html>
-      <head><meta name="viewport" content="width=device-width, initial-scale=1"></head>
-    </html>`);
+  res.send(`<!DOCTYPE html><html><head><meta name="viewport" content="width=device-width, initial-scale=1"></head></html>`);
 });
 
-
-
+// ─────────────────────────────────────────────────────────────────
+// POST /api/payments/send-payout-email
+// ─────────────────────────────────────────────────────────────────
 router.post('/send-payout-email', async (req, res) => {
-  const { subject, body } = req.body;
+  // <-- FIXED: Destructure actual fields from req.body
+  const { displayName, payoutSummary } = req.body;
+
+  if (!displayName || !payoutSummary) {
+    return res.status(400).json({ success: false, message: 'Missing payout details' });
+  }
+
+  const formatCurrency = (val) => {
+    return new Intl.NumberFormat('en-NG', { style: 'currency', currency: 'NGN' }).format(val || 0);
+  };
 
   try {
     const { data, error } = await resend.emails.send({
-  from: process.env.FROM_EMAIL,
-  to: process.env.COMPANY_EMAIL,
-  subject,
-  html: `
-    <h2>New Payout Request</h2>
-    <table style="font-family: sans-serif; line-height: 1.6;">
-      <tr><td><strong>Seller</strong></td><td>${displayName}</td></tr>
-      <tr><td><strong>Amount</strong></td><td>${formatCurrency(payoutSummary.amount)}</td></tr>
-      <tr><td><strong>Platform Fee (3%)</strong></td><td>${formatCurrency(payoutSummary.platformFee)}</td></tr>
-      <tr><td><strong>Net Payout</strong></td><td style="color: green;"><strong>${formatCurrency(payoutSummary.netAmount)}</strong></td></tr>
-      <tr><td><strong>Bank</strong></td><td>${payoutSummary.bankName}</td></tr>
-      <tr><td><strong>Account Name</strong></td><td>${payoutSummary.accountName}</td></tr>
-      <tr><td><strong>Account Number</strong></td><td>${payoutSummary.accountNumber}</td></tr>
-    </table>
-  `,
-});
+      from: process.env.FROM_EMAIL,
+      to: process.env.COMPANY_EMAIL,
+      subject: `New Payout Request - ${displayName}`,
+      html: `
+        <h2>New Payout Request</h2>
+        <table style="font-family: sans-serif; line-height: 1.6;">
+          <tr><td><strong>Seller</strong></td><td>${displayName}</td></tr>
+          <tr><td><strong>Amount</strong></td><td>${formatCurrency(payoutSummary.amount)}</td></tr>
+          <tr><td><strong>Platform Fee (3%)</strong></td><td>${formatCurrency(payoutSummary.platformFee)}</td></tr>
+          <tr><td><strong>Net Payout</strong></td><td style="color: green;"><strong>${formatCurrency(payoutSummary.netAmount)}</strong></td></tr>
+          <tr><td><strong>Bank</strong></td><td>${payoutSummary.bankName}</td></tr>
+          <tr><td><strong>Account Name</strong></td><td>${payoutSummary.accountName}</td></tr>
+          <tr><td><strong>Account Number</strong></td><td>${payoutSummary.accountNumber}</td></tr>
+        </table>
+      `,
+    });
 
     if (error) {
       console.error('Resend error:', error);
