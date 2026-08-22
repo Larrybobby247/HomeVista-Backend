@@ -1,39 +1,29 @@
-const User = require('../models/User');
-
-/**
- * Credit a user's wallet (for sales, refunds, wallet funding)
- */
 const creditWallet = async (userId, amount) => {
-  if (!userId || !amount || amount <= 0) return null;
+  if (!userId || !amount || amount <= 0) {
+    throw new Error(`Invalid wallet credit: userId=${userId}, amount=${amount}`);
+  }
 
   const updated = await User.findByIdAndUpdate(
     userId,
-    { $inc: { walletBalance: amount } },
-    { new: true }
+    {
+      $inc: {
+        walletBalance: amount,
+      },
+    },
+    {
+      new: true,
+      runValidators: true,
+    }
   );
-  console.log(`💰 CREDITED ${amount} to ${userId}. New balance: ${updated?.walletBalance}`);
+
+  if (!updated) {
+    throw new Error(`Cannot credit wallet: User ${userId} not found`);
+  }
+
+  console.log('💰 WALLET CREDIT SUCCESS');
+  console.log('User:', updated._id.toString());
+  console.log('Amount:', amount);
+  console.log('New balance:', updated.walletBalance);
+
   return updated;
 };
-
-/**
- * Debit a user's wallet (for payouts/withdrawals)
- */
-const debitWallet = async (userId, amount) => {
-  if (!userId || !amount || amount <= 0) return null;
-
-  const user = await User.findById(userId);
-  if (!user) throw new Error('User not found');
-
-  const currentBalance = user.walletBalance || 0;
-  if (currentBalance < amount) throw new Error('Insufficient wallet balance');
-
-  const updated = await User.findByIdAndUpdate(
-    userId,
-    { $inc: { walletBalance: -amount } },
-    { new: true }
-  );
-  console.log(`💸 DEBITED ${amount} from ${userId}. New balance: ${updated?.walletBalance}`);
-  return updated;
-};
-
-module.exports = { creditWallet, debitWallet };

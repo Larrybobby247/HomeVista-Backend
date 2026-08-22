@@ -494,31 +494,70 @@ exports.confirmPayment = async (req, res, next) => {
         data: payment,
       });
     }
+// ─── REGULAR PAYMENTS ───
+payment.status = 'completed';
+payment.completedAt = new Date();
 
-    // ─── REGULAR PAYMENTS: Credit seller ───
-    payment.status = 'completed';
-    payment.completedAt = new Date();
-    await payment.save();
+let property = null;
+let creditRecipientId = payment.recipientId;
 
-    let creditRecipientId = payment.recipientId;
+// Get property
+if (payment.propertyId) {
+  property = await Property.findById(payment.propertyId);
 
-    if (!creditRecipientId && payment.propertyId) {
-      const property = await Property.findById(payment.propertyId).select('listedBy');
-      if (property?.listedBy) {
-        creditRecipientId = property.listedBy;
-      }
-    }
+  if (!property) {
+    return res.status(404).json({
+      success: false,
+      message: 'Property associated with this payment was not found',
+    });
+  }
 
-    if (creditRecipientId) {
-      const netAmount = payment.amount - (payment.platformFee || 0) - (payment.commissionAmount || 0);
-      const credit = Math.max(0, netAmount);
+  // Use property owner as recipient if one wasn't explicitly supplied
+  if (!creditRecipientId && property.listedBy) {
+    creditRecipientId = property.listedBy;
+  }
+}
 
-      await User.findByIdAndUpdate(
-        creditRecipientId,
-        { $inc: { walletBalance: credit } },
-        { new: true }
-      );
-    }
+// Credit seller
+if (creditRecipientId) {
+  const netAmount =
+    payment.amount -
+    (payment.platformFee || 0) -
+    (payment.commissionAmount || 0);
+
+  const credit = Math.max(0, netAmount);
+
+  await User.findByIdAndUpdate(
+    creditRecipientId,
+    { $inc: { walletBalance: credit } },
+    { new: true }
+  );
+}
+
+// Mark property as sold
+if (property) {
+  // Prevent selling an already unavailable property
+  if (['sold', 'rented'].includes(property.status)) {
+    return res.status(400).json({
+      success: false,
+      message: `Property is already ${property.status}`,
+    });
+  }
+
+  property.status = 'sold';
+  property.buyer = payment.userId;
+  property.soldAt = new Date();
+
+  await property.save();
+}
+
+await payment.save();
+
+res.status(200).json({
+  success: true,
+  message: 'Payment confirmed and property marked as sold',
+  data: payment,
+});
 
     res.status(200).json({ success: true, message: 'Payment confirmed', data: payment });
   } catch (error) {
