@@ -179,17 +179,15 @@ const verifyPayment = async (req, res, next) => {
     const verifyData = await verifyRes.json();
 
     if (verifyData.data?.status === 'success') {
-      // Save Paystack metadata first
-      payment.paidAt = verifyData.data.paid_at ? new Date(verifyData.data.paid_at) : new Date();
-      payment.channel = verifyData.data.channel;
-      payment.currency = verifyData.data.currency;
-      await payment.save();
+  payment.status = 'completed';
+  payment.completedAt = new Date();
+  payment.paidAt = verifyData.data.paid_at ? new Date(verifyData.data.paid_at) : new Date();
+  payment.channel = verifyData.data.channel;
+  payment.currency = verifyData.data.currency;
+  await payment.save();
 
-      // Process business logic (wallet, property, etc.)
-      await processSuccessfulPayment(payment._id);
-      
-      return res.status(200).json({ success: true, message: 'Verified', data: payment });
-    }
+  await processSuccessfulPayment(payment._id);
+}
 
     payment.status = verifyData.data?.status || 'failed';
     await payment.save();
@@ -209,18 +207,25 @@ const verifyPayment = async (req, res, next) => {
 const getPaymentHistory = async (req, res, next) => {
   try {
     const payments = await Payment.find({ userId: req.user._id })
-      .populate('propertyId', 'title images address city state listedBy')
-      .populate('userId', 'firstName lastName email')
-      .sort({ createdAt: -1 });
+  .populate({
+    path: 'propertyId',
+    select: 'title images address city state listedBy',
+    populate: {
+      path: 'listedBy',
+      select: 'firstName lastName fullName',
+    },
+  })
+  .sort({ createdAt: -1 });
 
     const mapped = payments.map((p) => ({
       _id: p._id,
       propertyId: p.propertyId?._id?.toString() || p.propertyId,
       propertyTitle: p.propertyId?.title || p.description || 'Property Transaction',
       propertyImage: p.propertyId?.images?.[0]?.url || null,
+      
       amount: p.amount,
       status: p.status,
-      type: p.type,
+      type: p.type === 'property_purchase' ? 'purchase' : p.type,
       paymentMethod: p.method || p.channel || 'card',
       createdAt: p.createdAt,
       completedAt: p.completedAt,
@@ -270,10 +275,9 @@ const getWalletBalance = async (req, res, next) => {
  */
 const paystackWebhook = async (req, res) => {
   const hash = crypto
-    .createHmac('sha512', PAYSTACK_SECRET)
-    .update(JSON.stringify(req.body))
-    .digest('hex');
-
+  .createHmac('sha512', PAYSTACK_SECRET)
+  .update(req.body)  // <-- Pass Buffer directly, no JSON.stringify
+  .digest('hex');
   if (hash !== req.headers['x-paystack-signature']) {
     return res.sendStatus(400);
   }
@@ -281,17 +285,20 @@ const paystackWebhook = async (req, res) => {
   const event = req.body;
 
    if (event.event === 'charge.success') {
-    const reference = event.data.reference;
-    
-    try {
-      const payment = await Payment.findOne({ providerReference: reference });
-      if (payment) {
-        await processSuccessfulPayment(payment._id);
-      }
-    } catch (err) {
-      console.error('Webhook processing error:', err);
+  const reference = event.data.reference;
+  
+  try {
+    const payment = await Payment.findOne({ providerReference: reference });
+    if (payment && payment.status !== 'completed') {
+      payment.status = 'completed';
+      payment.completedAt = new Date();
+      await payment.save();
+      await processSuccessfulPayment(payment._id);
     }
+  } catch (err) {
+    console.error('Webhook processing error:', err);
   }
+}
 
   res.sendStatus(200);
 };
