@@ -129,13 +129,25 @@ router.post('/conversations/:id/messages', protect, async (req, res, next) => {
   }
 });
 
-router.patch('/conversations/:id/read', protect, async (req, res, next) => {
+// MARK MESSAGES AS READ
+router.patch('/messages/:conversationId/read', protect, async (req, res, next) => {
   try {
-    await Message.updateMany(
-      { conversationId: req.params.id, senderId: { $ne: req.user._id }, isRead: false },
-      { $set: { isRead: true, readAt: new Date() } }
+    const { conversationId } = req.params;
+    const userId = req.user._id;
+
+    const result = await Message.updateMany(
+      {
+        conversationId,
+        senderId: { $ne: userId },
+        isRead: false,
+      },
+      { $set: { isRead: true } }
     );
-    res.status(200).json({ success: true });
+
+    res.status(200).json({
+      success: true,
+      modifiedCount: result.modifiedCount,
+    });
   } catch (error) {
     next(error);
   }
