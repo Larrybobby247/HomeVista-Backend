@@ -448,118 +448,17 @@ exports.getPendingPayments = async (req, res, next) => {
  * @route   PATCH /api/admin/payments/:id/confirm
  * @access  Private (Super Admin)
  */
+
 exports.confirmPayment = async (req, res, next) => {
   try {
     const payment = await Payment.findById(req.params.id);
-
-    if (!payment) {
-      return res.status(404).json({ success: false, message: 'Payment not found' });
+    if (!payment) return res.status(404).json({ success: false, message: 'Payment not found' });
+    if (payment.status === 'completed' && payment.processedAt) {
+      return res.status(200).json({ success: true, message: 'Already confirmed', data: payment });
     }
 
-    if (payment.status === 'completed') {
-      return res.status(200).json({
-        success: true,
-        message: 'Payment already confirmed',
-        data: payment,
-      });
-    }
-
-    // ─── PAYOUTS: Deduct from user's wallet ───
-    if (payment.type === 'payout') {
-      const user = await User.findById(payment.userId);
-      if (!user) {
-        return res.status(404).json({ success: false, message: 'User not found' });
-      }
-
-      if ((user.walletBalance || 0) < payment.amount) {
-        return res.status(400).json({
-          success: false,
-          message: 'Insufficient wallet balance for payout',
-        });
-      }
-
-      await User.findByIdAndUpdate(
-        payment.userId,
-        { $inc: { walletBalance: -payment.amount } },
-        { new: true }
-      );
-
-      payment.status = 'completed';
-      payment.completedAt = new Date();
-      await payment.save();
-
-      return res.status(200).json({
-        success: true,
-        message: 'Payout confirmed and deducted from wallet',
-        data: payment,
-      });
-    }
-// ─── REGULAR PAYMENTS ───
-payment.status = 'completed';
-payment.completedAt = new Date();
-
-let property = null;
-let creditRecipientId = payment.recipientId;
-
-// Get property
-if (payment.propertyId) {
-  property = await Property.findById(payment.propertyId);
-
-  if (!property) {
-    return res.status(404).json({
-      success: false,
-      message: 'Property associated with this payment was not found',
-    });
-  }
-
-  // Use property owner as recipient if one wasn't explicitly supplied
-  if (!creditRecipientId && property.listedBy) {
-    creditRecipientId = property.listedBy;
-  }
-}
-
-// Credit seller
-if (creditRecipientId) {
-  const netAmount =
-    payment.amount -
-    (payment.platformFee || 0) -
-    (payment.commissionAmount || 0);
-
-  const credit = Math.max(0, netAmount);
-
-  await User.findByIdAndUpdate(
-    creditRecipientId,
-    { $inc: { walletBalance: credit } },
-    { new: true }
-  );
-}
-
-// Mark property as sold
-if (property) {
-  // Prevent selling an already unavailable property
-  if (['sold', 'rented'].includes(property.status)) {
-    return res.status(400).json({
-      success: false,
-      message: `Property is already ${property.status}`,
-    });
-  }
-
-  property.status = 'sold';
-  property.buyer = payment.userId;
-  property.soldAt = new Date();
-
-  await property.save();
-}
-
-await payment.save();
-
-res.status(200).json({
-  success: true,
-  message: 'Payment confirmed and property marked as sold',
-  data: payment,
-});
-
-    res.status(200).json({ success: true, message: 'Payment confirmed', data: payment });
+    const updated = await processSuccessfulPayment(payment._id);
+    res.status(200).json({ success: true, message: 'Payment processed', data: updated });
   } catch (error) {
     next(error);
   }
