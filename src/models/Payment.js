@@ -55,6 +55,8 @@ const paymentSchema = new mongoose.Schema({
     accountNumber: { type: String },
     accountName: { type: String },
   },
+  
+  processedAt: { type: Date, default: null }, // <-- ADD THIS
 
   // Commission and fees
   commissionAmount: { type: Number, default: 0 },
@@ -65,6 +67,7 @@ const paymentSchema = new mongoose.Schema({
 
   completedAt: { type: Date },
 }, { timestamps: true });
+
 
 paymentSchema.index({ userId: 1 });
 paymentSchema.index({ status: 1 });

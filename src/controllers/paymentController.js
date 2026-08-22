@@ -8,6 +8,7 @@ const crypto = require('crypto');
 const Payment = require('../models/Payment');
 const User = require('../models/User');
 const Property = require('../models/Property');
+const { processSuccessfulPayment } = require('../services/paymentProcessor');
 
 const PAYSTACK_SECRET = process.env.PAYSTACK_SECRET_KEY;
 const PAYSTACK_BASE = 'https://api.paystack.co';
@@ -163,78 +164,42 @@ const initializePayment = async (req, res, next) => {
 const verifyPayment = async (req, res, next) => {
   try {
     const { reference } = req.params;
+    const payment = await Payment.findOne({ providerReference: reference, userId: req.user._id });
+    if (!payment) return res.status(404).json({ success: false, message: 'Payment not found' });
 
-    const payment = await Payment.findOne({
-      providerReference: reference,
-      userId: req.user._id,
-    });
-
-    if (!payment) {
-      return res.status(404).json({
-        success: false,
-        message: 'Payment not found',
-      });
-    }
-
+    // If already processed by webhook, just return
     if (payment.status === 'completed') {
-      return res.status(200).json({
-        success: true,
-        message: 'Payment already verified',
-        data: payment,
-      });
+      return res.status(200).json({ success: true, data: payment });
     }
 
+    // Verify with Paystack
     const verifyRes = await fetch(`${PAYSTACK_BASE}/transaction/verify/${reference}`, {
-      headers: {
-        Authorization: `Bearer ${PAYSTACK_SECRET}`,
-      },
+      headers: { Authorization: `Bearer ${PAYSTACK_SECRET}` },
     });
-
     const verifyData = await verifyRes.json();
 
-    if (!verifyData.status) {
-      return res.status(400).json({
-        success: false,
-        message: verifyData.message || 'Paystack verification failed',
-      });
-    }
-
-    const tx = verifyData.data;
-
-    if (tx.status === 'success') {
-      // Mark payment completed
-      payment.status = 'completed';
-      payment.completedAt = new Date();
-      payment.paidAt = tx.paid_at ? new Date(tx.paid_at) : new Date();
-      payment.channel = tx.channel;
-      payment.currency = tx.currency;
-      payment.fees = tx.fees ? tx.fees / 100 : 0;
-      payment.customerCode = tx.customer?.customer_code || null;
+    if (verifyData.data?.status === 'success') {
+      // Save Paystack metadata first
+      payment.paidAt = verifyData.data.paid_at ? new Date(verifyData.data.paid_at) : new Date();
+      payment.channel = verifyData.data.channel;
+      payment.currency = verifyData.data.currency;
       await payment.save();
 
-      // ─── Run business logic (wallet updates, property status, etc.) ───
-      await processCompletedPayment(payment);
-
-      return res.status(200).json({
-        success: true,
-        message: 'Payment verified and completed',
-        data: payment,
-      });
+      // Process business logic (wallet, property, etc.)
+      await processSuccessfulPayment(payment._id);
+      
+      return res.status(200).json({ success: true, message: 'Verified', data: payment });
     }
 
-    // Failed / abandoned
-    payment.status = tx.status;
+    payment.status = verifyData.data?.status || 'failed';
     await payment.save();
+    return res.status(400).json({ success: false, message: `Status: ${payment.status}` });
 
-    return res.status(400).json({
-      success: false,
-      message: `Payment status: ${tx.status}`,
-      data: payment,
-    });
   } catch (error) {
     next(error);
   }
 };
+
 
 /**
  * @desc    Get payment history
@@ -315,36 +280,14 @@ const paystackWebhook = async (req, res) => {
 
   const event = req.body;
 
-  if (event.event === 'charge.success') {
-    const tx = event.data;
-    const reference = tx.reference;
-
+   if (event.event === 'charge.success') {
+    const reference = event.data.reference;
+    
     try {
-      const payment = await Payment.findOneAndUpdate(
-        { providerReference: reference, status: { $ne: 'completed' } },
-        {
-          $set: {
-            status: 'completed',
-            completedAt: new Date(),
-            paidAt: tx.paid_at ? new Date(tx.paid_at) : new Date(),
-            channel: tx.channel,
-            currency: tx.currency,
-            fees: tx.fees ? tx.fees / 100 : 0,
-            customerCode: tx.customer?.customer_code || null,
-          },
-        },
-        { new: true }
-      );
-
-      if (!payment) {
-        console.log(`Webhook: no pending payment found for ${reference}`);
-        return res.sendStatus(200);
+      const payment = await Payment.findOne({ providerReference: reference });
+      if (payment) {
+        await processSuccessfulPayment(payment._id);
       }
-
-      // Run the SAME business logic as verifyPayment
-      await processCompletedPayment(payment);
-
-      console.log(`Webhook: Payment ${reference} processed`);
     } catch (err) {
       console.error('Webhook processing error:', err);
     }

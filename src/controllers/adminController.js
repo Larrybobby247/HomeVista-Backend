@@ -6,6 +6,7 @@
 const User = require('../models/User');
 const Property = require('../models/Property');
 const Payment = require('../models/Payment');
+const { processSuccessfulPayment } = require('../services/paymentProcessor');
 
 /**
  * @desc    Get dashboard statistics
@@ -450,92 +451,16 @@ exports.getPendingPayments = async (req, res, next) => {
 exports.confirmPayment = async (req, res, next) => {
   try {
     const payment = await Payment.findById(req.params.id);
-    console.log('--- CONFIRM PAYMENT DEBUG ---');
-    console.log('Payment found:', payment ? 'YES' : 'NO');
-    console.log('Payment type:', payment?.type);
-    console.log('Payment status:', payment?.status);
-    console.log('Payment userId:', payment?.userId);
-    console.log('Payment amount:', payment?.amount);
-
-    if (!payment) {
-      return res.status(404).json({ success: false, message: 'Payment not found' });
-    }
-
+    if (!payment) return res.status(404).json({ success: false, message: 'Payment not found' });
     if (payment.status === 'completed') {
-      return res.status(200).json({
-        success: true,
-        message: 'Payment already confirmed',
-        data: payment,
-      });
+      return res.status(200).json({ success: true, message: 'Already confirmed', data: payment });
     }
 
-    // PAYOUT BRANCH
-    if (payment.type === 'payout') {
-      const user = await User.findById(payment.userId);
-      console.log('Payout user found:', user ? 'YES' : 'NO');
-      console.log('User current walletBalance:', user?.walletBalance);
-      console.log('User _id:', user?._id);
+    // One line handles everything: property status, wallet credit, wallet debit
+    const updated = await processSuccessfulPayment(payment._id);
 
-      if (!user) {
-        return res.status(404).json({ success: false, message: 'User not found' });
-      }
-
-      if ((user.walletBalance || 0) < payment.amount) {
-        return res.status(400).json({
-          success: false,
-          message: 'Insufficient wallet balance for payout',
-        });
-      }
-
-      const updateResult = await User.findByIdAndUpdate(
-        payment.userId,
-        { $inc: { walletBalance: -payment.amount } },
-        { new: true }
-      );
-      console.log('Payout update result:', updateResult);
-      console.log('New walletBalance:', updateResult?.walletBalance);
-
-      payment.status = 'completed';
-      payment.completedAt = new Date();
-      await payment.save();
-
-      return res.status(200).json({
-        success: true,
-        message: 'Payout confirmed',
-        data: payment,
-      });
-    }
-
-    // REGULAR PAYMENT BRANCH
-    payment.status = 'completed';
-    payment.completedAt = new Date();
-    await payment.save();
-
-    let creditRecipientId = payment.recipientId;
-    if (!creditRecipientId && payment.propertyId) {
-      const property = await Property.findById(payment.propertyId).select('listedBy');
-      creditRecipientId = property?.listedBy;
-    }
-
-    console.log('Credit recipientId:', creditRecipientId);
-
-    if (creditRecipientId) {
-      const netAmount = payment.amount - (payment.platformFee || 0) - (payment.commissionAmount || 0);
-      const credit = Math.max(0, netAmount);
-      console.log('Crediting amount:', credit);
-
-      const updateResult = await User.findByIdAndUpdate(
-        creditRecipientId,
-        { $inc: { walletBalance: credit } },
-        { new: true }
-      );
-      console.log('Credit update result:', updateResult);
-      console.log('Recipient new balance:', updateResult?.walletBalance);
-    }
-
-    res.status(200).json({ success: true, message: 'Payment confirmed', data: payment });
+    res.status(200).json({ success: true, message: 'Payment processed', data: updated });
   } catch (error) {
-    console.error('CONFIRM PAYMENT ERROR:', error);
     next(error);
   }
 };
