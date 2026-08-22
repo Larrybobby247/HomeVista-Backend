@@ -451,15 +451,76 @@ exports.getPendingPayments = async (req, res, next) => {
 exports.confirmPayment = async (req, res, next) => {
   try {
     const payment = await Payment.findById(req.params.id);
-    if (!payment) return res.status(404).json({ success: false, message: 'Payment not found' });
-    if (payment.status === 'completed') {
-      return res.status(200).json({ success: true, message: 'Already confirmed', data: payment });
+
+    if (!payment) {
+      return res.status(404).json({ success: false, message: 'Payment not found' });
     }
 
-    // One line handles everything: property status, wallet credit, wallet debit
-    const updated = await processSuccessfulPayment(payment._id);
+    if (payment.status === 'completed') {
+      return res.status(200).json({
+        success: true,
+        message: 'Payment already confirmed',
+        data: payment,
+      });
+    }
 
-    res.status(200).json({ success: true, message: 'Payment processed', data: updated });
+    // ─── PAYOUTS: Deduct from user's wallet ───
+    if (payment.type === 'payout') {
+      const user = await User.findById(payment.userId);
+      if (!user) {
+        return res.status(404).json({ success: false, message: 'User not found' });
+      }
+
+      if ((user.walletBalance || 0) < payment.amount) {
+        return res.status(400).json({
+          success: false,
+          message: 'Insufficient wallet balance for payout',
+        });
+      }
+
+      await User.findByIdAndUpdate(
+        payment.userId,
+        { $inc: { walletBalance: -payment.amount } },
+        { new: true }
+      );
+
+      payment.status = 'completed';
+      payment.completedAt = new Date();
+      await payment.save();
+
+      return res.status(200).json({
+        success: true,
+        message: 'Payout confirmed and deducted from wallet',
+        data: payment,
+      });
+    }
+
+    // ─── REGULAR PAYMENTS: Credit seller ───
+    payment.status = 'completed';
+    payment.completedAt = new Date();
+    await payment.save();
+
+    let creditRecipientId = payment.recipientId;
+
+    if (!creditRecipientId && payment.propertyId) {
+      const property = await Property.findById(payment.propertyId).select('listedBy');
+      if (property?.listedBy) {
+        creditRecipientId = property.listedBy;
+      }
+    }
+
+    if (creditRecipientId) {
+      const netAmount = payment.amount - (payment.platformFee || 0) - (payment.commissionAmount || 0);
+      const credit = Math.max(0, netAmount);
+
+      await User.findByIdAndUpdate(
+        creditRecipientId,
+        { $inc: { walletBalance: credit } },
+        { new: true }
+      );
+    }
+
+    res.status(200).json({ success: true, message: 'Payment confirmed', data: payment });
   } catch (error) {
     next(error);
   }
