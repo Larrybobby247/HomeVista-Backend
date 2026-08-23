@@ -11,6 +11,183 @@ const FROM_EMAIL =
   process.env.EMAIL_FROM || 'HomeVista <onboarding@resend.dev> ';
 
 /**
+ * Send signup/email verification code
+ */
+const sendSignupVerificationCode = async (
+  email,
+  code,
+  firstName = 'there'
+) => {
+  try {
+    const { data, error } = await resend.emails.send({
+      from: FROM_EMAIL,
+      to: email,
+      subject: 'Verify Your HomeVista Account',
+
+      html: `
+        <!DOCTYPE html>
+        <html>
+        <head>
+          <meta charset="utf-8">
+          <meta
+            name="viewport"
+            content="width=device-width, initial-scale=1.0"
+          >
+
+          <title>Verify Your HomeVista Account</title>
+
+          <style>
+            body {
+              font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI',
+                Roboto, sans-serif;
+              background: #f5f5f5;
+              margin: 0;
+              padding: 20px;
+            }
+
+            .container {
+              max-width: 480px;
+              margin: 0 auto;
+              background: #ffffff;
+              border-radius: 16px;
+              padding: 40px;
+              box-shadow: 0 4px 24px rgba(0,0,0,0.08);
+            }
+
+            .logo {
+              text-align: center;
+              margin-bottom: 32px;
+            }
+
+            .logo h1 {
+              color: #003334;
+              font-size: 28px;
+              margin: 0;
+            }
+
+            .heading {
+              font-size: 22px;
+              font-weight: 700;
+              color: #111827;
+              text-align: center;
+              margin-bottom: 12px;
+            }
+
+            .message {
+              color: #6b7280;
+              font-size: 15px;
+              line-height: 1.6;
+              text-align: center;
+              margin-bottom: 28px;
+            }
+
+            .code-box {
+              background: #f0fdf4;
+              border: 2px dashed #22c55e;
+              border-radius: 12px;
+              padding: 24px;
+              text-align: center;
+              margin-bottom: 28px;
+            }
+
+            .code {
+              font-size: 36px;
+              font-weight: 800;
+              color: #003334;
+              letter-spacing: 8px;
+              font-family: 'Courier New', monospace;
+            }
+
+            .expiry {
+              color: #ef4444;
+              font-size: 13px;
+              margin-top: 12px;
+              font-weight: 500;
+            }
+
+            .footer {
+              text-align: center;
+              color: #9ca3af;
+              font-size: 13px;
+              margin-top: 32px;
+              border-top: 1px solid #e5e7eb;
+              padding-top: 20px;
+            }
+          </style>
+        </head>
+
+        <body>
+          <div class="container">
+
+            <div class="logo">
+              <h1>HomeVista</h1>
+            </div>
+
+            <div class="heading">
+              Verify Your Email
+            </div>
+
+            <div class="message">
+              Hi ${firstName},<br><br>
+
+              Welcome to HomeVista! Use the verification code below
+              to verify your email address and activate your account.
+            </div>
+
+            <div class="code-box">
+              <div class="code">${code}</div>
+
+              <div class="expiry">
+                ⏱️ This code expires in 15 minutes
+              </div>
+            </div>
+
+            <div class="footer">
+              HomeVista Real Estate Platform<br>
+              This is an automated message. Please do not reply.
+            </div>
+
+          </div>
+        </body>
+        </html>
+      `,
+
+      text: `
+HomeVista Email Verification
+
+Hi ${firstName},
+
+Welcome to HomeVista!
+
+Your email verification code is:
+
+${code}
+
+This code expires in 15 minutes.
+
+If you did not create a HomeVista account, please ignore this email.
+      `,
+    });
+
+    if (error) {
+      console.error('Resend signup verification error:', error);
+      throw new Error('Failed to send verification email');
+    }
+
+    console.log(`📧 Signup verification code sent to ${email}`);
+
+    return {
+      success: true,
+      id: data?.id,
+    };
+
+  } catch (error) {
+    console.error('sendSignupVerificationCode error:', error);
+    throw error;
+  }
+};
+
+/**
  * Send password reset verification code email
  */
 const sendPasswordResetCode = async (
@@ -466,6 +643,7 @@ HomeVista Real Estate Platform
 
 
 module.exports = {
+  sendSignupVerificationCode, 
   sendPasswordResetCode,
   sendPaymentRequest,
 };
