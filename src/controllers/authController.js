@@ -8,7 +8,7 @@ const User = require('../models/User');
 const bcrypt = require('bcryptjs');
 const { generateAccessToken, generateRefreshToken, verifyRefreshToken } = require('../utils/jwt');
 const { validationResult } = require('express-validator');
-const { sendPasswordResetCode } = require('../utils/email');
+const { sendPasswordResetCode, sendSignupVerificationCode} = require('../utils/email');
 
 // ============================================
 // PASSWORD RESET CODE STORAGE
@@ -45,6 +45,7 @@ const cleanupExpiredCodes = () => {
 exports.register = async (req, res, next) => {
   try {
     const errors = validationResult(req);
+
     if (!errors.isEmpty()) {
       return res.status(400).json({
         success: false,
@@ -74,7 +75,13 @@ exports.register = async (req, res, next) => {
       });
     }
 
-    const existingUser = await User.findOne({ email: email.toLowerCase() });
+    const normalizedEmail = email.toLowerCase().trim();
+
+    // Check if email already exists
+    const existingUser = await User.findOne({
+      email: normalizedEmail,
+    });
+
     if (existingUser) {
       return res.status(400).json({
         success: false,
@@ -82,7 +89,9 @@ exports.register = async (req, res, next) => {
       });
     }
 
+    // Check if phone already exists
     const existingPhone = await User.findOne({ phoneNumber });
+
     if (existingPhone) {
       return res.status(400).json({
         success: false,
@@ -90,8 +99,12 @@ exports.register = async (req, res, next) => {
       });
     }
 
+    // ============================================
+    // CREATE USER
+    // ============================================
+
     const user = await User.create({
-      email: email.toLowerCase(),
+      email: normalizedEmail,
       password,
       firstName,
       lastName,
@@ -101,25 +114,73 @@ exports.register = async (req, res, next) => {
       city,
       state,
       country: country || 'Nigeria',
+
+      // User must verify email first
       status: 'pending_verification',
+
+      // If these fields exist in your User model
+      isEmailVerified: false,
     });
 
-    const accessToken = generateAccessToken(user._id, user.email, user.role);
-    const refreshToken = generateRefreshToken(user._id);
+    // ============================================
+    // GENERATE EMAIL VERIFICATION CODE
+    // ============================================
+
+    const verificationCode = generateSixDigitCode();
+
+    const expiresAt = Date.now() + CODE_EXPIRY_MS;
+
+    // Store verification code
+    verificationCodes.set(normalizedEmail, {
+      code: verificationCode,
+      expiresAt,
+      attempts: 0,
+      createdAt: Date.now(),
+    });
+
+    // ============================================
+    // SEND VERIFICATION EMAIL
+    // ============================================
+
+    try {
+      await sendSignupVerificationCode(
+        user.email,
+        verificationCode,
+        user.firstName
+      );
+
+      console.log(`📧 Verification code sent to ${user.email}`);
+    } catch (emailError) {
+      console.error('Failed to send verification email:', emailError);
+
+      // Optional: remove the user if email could not be sent
+      await User.findByIdAndDelete(user._id);
+      verificationCodes.delete(normalizedEmail);
+
+      return res.status(500).json({
+        success: false,
+        message: 'Account could not be created because the verification email could not be sent. Please try again.',
+      });
+    }
+
+    // ============================================
+    // DON'T NEED TO GIVE FULL ACCESS YET
+    // ============================================
 
     user.password = undefined;
 
-    res.status(201).json({
+    return res.status(201).json({
       success: true,
-      message: 'Account created successfully',
+      message: 'Account created successfully. A verification code has been sent to your email.',
       data: {
         user,
-        accessToken,
-        refreshToken,
-        expiresIn: 604800,
+        email: user.email,
+        requiresVerification: true,
       },
     });
+
   } catch (error) {
+    console.error('Register error:', error);
     next(error);
   }
 };
