@@ -4,6 +4,7 @@ const Payment = require('../models/Payment');
 const User = require('../models/User');
 const Property = require('../models/Property');
 const { processSuccessfulPayment } = require('../services/paymentProcessor');
+const { sendPaymentRequest } = require('../utils/email');
 
 const PAYSTACK_SECRET = process.env.PAYSTACK_SECRET_KEY;
 const PAYSTACK_BASE = 'https://api.paystack.co';
@@ -290,13 +291,29 @@ exports.getWalletTransactions = async (req, res, next) => {
 // ─── POST /api/payments/payouts ───
 exports.requestPayout = async (req, res, next) => {
   try {
-    const { amount, netAmount, platformFee, bankName, accountNumber, accountName, currency } = req.body;
+    const {
+      amount,
+      netAmount,
+      platformFee,
+      bankName,
+      accountNumber,
+      accountName,
+      currency,
+    } = req.body;
+
     const userId = req.user._id;
 
     const user = await User.findById(userId);
-    if (!user) return res.status(404).json({ success: false, message: 'User not found' });
+
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found',
+      });
+    }
 
     const availableBalance = user.walletBalance || 0;
+
     if (availableBalance < amount) {
       return res.status(400).json({
         success: false,
@@ -304,6 +321,7 @@ exports.requestPayout = async (req, res, next) => {
       });
     }
 
+    // Create payout request
     const payout = await Payment.create({
       userId,
       recipientId: userId,
@@ -315,8 +333,54 @@ exports.requestPayout = async (req, res, next) => {
       method: 'bank_transfer',
       description: `Payout to ${bankName} ••••${accountNumber.slice(-4)}`,
       currency: currency || 'NGN',
-      recipientBankDetails: { bankName, accountNumber, accountName },
+      recipientBankDetails: {
+        bankName,
+        accountNumber,
+        accountName,
+      },
     });
+
+    // ============================================
+    // NOTIFY HOMEVISTA BUSINESS
+    // ============================================
+
+    try {
+      await sendPaymentRequest({
+        email: process.env.ADMIN_EMAIL,
+
+        firstName: 'HomeVista Admin',
+
+        amount: amount,
+
+        description: `Payout request from ${user.firstName} ${user.lastName}`,
+
+        reference: payout._id.toString(),
+
+        // You can later replace this with your admin dashboard URL
+        paymentLink: null,
+      });
+
+      console.log(
+        `📧 Payout notification sent to ${process.env.ADMIN_EMAIL}`
+      );
+    } catch (emailError) {
+      // Don't fail the payout request just because the email failed
+      console.error(
+        'Failed to send payout notification email:',
+        emailError
+      );
+    }
+
+    return res.status(201).json({
+      success: true,
+      message: 'Payout request submitted successfully',
+      data: payout,
+    });
+
+  } catch (error) {
+    next(error);
+  }
+};
 
     res.status(201).json({ success: true, data: payout });
   } catch (error) {
