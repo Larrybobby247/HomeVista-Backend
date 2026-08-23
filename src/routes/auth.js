@@ -17,6 +17,8 @@ const {
   resendResetCode,
   verifyResetCode,
   resetPassword,
+  verifyEmail,
+  resendVerificationCode,
 } = require('../controllers/authController');
 const { protect } = require('../middleware/auth');
 
@@ -38,6 +40,31 @@ const loginValidation = [
 ];
 
 router.post('/register', registerValidation, register);
+// Email Verification Routes
+router.post(
+  '/verify-email',
+  [
+    body('email')
+      .isEmail()
+      .normalizeEmail()
+      .withMessage('Please provide a valid email'),
+
+    body('code')
+      .isLength({ min: 6, max: 6 })
+      .isNumeric()
+      .withMessage('Verification code must be 6 digits'),
+  ],
+  verifyEmail
+);
+
+router.post(
+  '/verify-email/resend',
+  body('email')
+    .isEmail()
+    .normalizeEmail()
+    .withMessage('Please provide a valid email'),
+  resendVerificationCode
+);
 router.post('/login', loginValidation, login);
 router.post('/logout', protect, logout);
 router.get('/me', protect, getMe);
