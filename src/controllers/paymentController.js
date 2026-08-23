@@ -381,9 +381,3 @@ exports.requestPayout = async (req, res, next) => {
     next(error);
   }
 };
-
-    res.status(201).json({ success: true, data: payout });
-  } catch (error) {
-    next(error);
-  }
-};
