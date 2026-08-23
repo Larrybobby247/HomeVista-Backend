@@ -16,6 +16,7 @@ const { sendPasswordResetCode, sendSignupVerificationCode} = require('../utils/e
 // In production, replace this with Redis!
 // Format: Map<email, { code, expiresAt, attempts, createdAt }>
 const resetCodes = new Map();
+const verificationCodes = new Map();
 const MAX_ATTEMPTS = 5;
 const CODE_EXPIRY_MS = 15 * 60 * 1000; // 15 minutes
 const RESEND_COOLDOWN_MS = 60 * 1000;  // 60 seconds
@@ -669,6 +670,207 @@ exports.resetPassword = async (req, res, next) => {
     });
   } catch (error) {
     console.error('Reset password error:', error);
+    next(error);
+  }
+};
+
+/**
+ * @desc    Verify user's email
+ * @route   POST /api/auth/verify-email
+ * @access  Public
+ */
+exports.verifyEmail = async (req, res, next) => {
+  try {
+    const errors = validationResult(req);
+
+    if (!errors.isEmpty()) {
+      return res.status(400).json({
+        success: false,
+        message: 'Validation failed',
+        errors: errors.array(),
+      });
+    }
+
+    const { email, code } = req.body;
+
+    const normalizedEmail = email.toLowerCase().trim();
+
+    // Find verification code
+    const verificationData = verificationCodes.get(normalizedEmail);
+
+    if (!verificationData) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid or expired verification code. Please request a new code.',
+      });
+    }
+
+    // Check expiration
+    if (Date.now() > verificationData.expiresAt) {
+      verificationCodes.delete(normalizedEmail);
+
+      return res.status(400).json({
+        success: false,
+        message: 'Verification code has expired. Please request a new code.',
+      });
+    }
+
+    // Check attempts
+    if (verificationData.attempts >= MAX_ATTEMPTS) {
+      verificationCodes.delete(normalizedEmail);
+
+      return res.status(400).json({
+        success: false,
+        message: 'Too many failed attempts. Please request a new code.',
+      });
+    }
+
+    // Check code
+    if (verificationData.code !== code.trim()) {
+      verificationData.attempts += 1;
+
+      return res.status(400).json({
+        success: false,
+        message: `Invalid verification code. ${
+          MAX_ATTEMPTS - verificationData.attempts
+        } attempts remaining.`,
+      });
+    }
+
+    // Find user
+    const user = await User.findOne({
+      email: normalizedEmail,
+    });
+
+    if (!user) {
+      verificationCodes.delete(normalizedEmail);
+
+      return res.status(404).json({
+        success: false,
+        message: 'User not found.',
+      });
+    }
+
+    // Verify email
+    user.isEmailVerified = true;
+    user.status = 'active';
+
+    await user.save();
+
+    // Code has been successfully used
+    verificationCodes.delete(normalizedEmail);
+
+    // Generate tokens AFTER verification
+    const accessToken = generateAccessToken(
+      user._id,
+      user.email,
+      user.role
+    );
+
+    const refreshToken = generateRefreshToken(user._id);
+
+    user.password = undefined;
+
+    return res.status(200).json({
+      success: true,
+      message: 'Email verified successfully. Your account is now active.',
+      data: {
+        user,
+        accessToken,
+        refreshToken,
+        expiresIn: 604800,
+      },
+    });
+  } catch (error) {
+    console.error('Verify email error:', error);
+    next(error);
+  }
+};
+
+/**
+ * @desc    Resend email verification code
+ * @route   POST /api/auth/verify-email/resend
+ * @access  Public
+ */
+exports.resendVerificationCode = async (req, res, next) => {
+  try {
+    const errors = validationResult(req);
+
+    if (!errors.isEmpty()) {
+      return res.status(400).json({
+        success: false,
+        message: 'Validation failed',
+        errors: errors.array(),
+      });
+    }
+
+    const { email } = req.body;
+
+    const normalizedEmail = email.toLowerCase().trim();
+
+    // Find user
+    const user = await User.findOne({
+      email: normalizedEmail,
+    });
+
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found.',
+      });
+    }
+
+    // Already verified
+    if (user.isEmailVerified) {
+      return res.status(400).json({
+        success: false,
+        message: 'This email has already been verified.',
+      });
+    }
+
+    // Check resend cooldown
+    const existing = verificationCodes.get(normalizedEmail);
+
+    if (
+      existing &&
+      Date.now() - existing.createdAt < RESEND_COOLDOWN_MS
+    ) {
+      const retryAfter = Math.ceil(
+        (RESEND_COOLDOWN_MS -
+          (Date.now() - existing.createdAt)) /
+          1000
+      );
+
+      return res.status(429).json({
+        success: false,
+        message: `Please wait ${retryAfter} seconds before requesting a new code.`,
+        retryAfter,
+      });
+    }
+
+    // Generate new code
+    const verificationCode = generateSixDigitCode();
+
+    verificationCodes.set(normalizedEmail, {
+      code: verificationCode,
+      expiresAt: Date.now() + CODE_EXPIRY_MS,
+      attempts: 0,
+      createdAt: Date.now(),
+    });
+
+    // Send email
+    await sendSignupVerificationCode(
+      user.email,
+      verificationCode,
+      user.firstName
+    );
+
+    return res.status(200).json({
+      success: true,
+      message: 'A new verification code has been sent to your email.',
+    });
+  } catch (error) {
+    console.error('Resend verification error:', error);
     next(error);
   }
 };
