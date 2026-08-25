@@ -8,7 +8,7 @@ const { Resend } = require('resend');
 const resend = new Resend(process.env.RESEND_API_KEY);
 
 const FROM_EMAIL =
-  process.env.EMAIL_FROM || 'HomeVista <onboarding@resend.dev> ';
+  process.env.EMAIL_FROM || 'HomeVista <noreply@accurrattehommes.com>';
 
 /**
  * Send signup/email verification code
