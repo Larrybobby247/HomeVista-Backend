@@ -5,12 +5,15 @@ const User = require('../models/User');
 const Property = require('../models/Property');
 const { processSuccessfulPayment } = require('../services/paymentProcessor');
 const { sendPaymentRequest } = require('../utils/email');
+<<<<<<< HEAD
 const { notify } = require('../services/notificationService');
 
 // Platform commission taken from every sale/rent (percentage of the property price)
 const COMMISSION_PERCENT = Number(process.env.PLATFORM_COMMISSION_PERCENT || 5);
 const SALE_TYPES = ['purchase', 'rent', 'reservation'];
 const UNAVAILABLE = ['sold', 'rented', 'reserved'];
+=======
+>>>>>>> ee17f8b2d265c80fd0bfae13b52e959d1cf8aad9
 
 const PAYSTACK_SECRET = process.env.PAYSTACK_SECRET_KEY;
 const PAYSTACK_BASE = 'https://api.paystack.co';
@@ -455,6 +458,7 @@ exports.requestPayout = async (req, res, next) => {
     next(error);
   }
 };
+<<<<<<< HEAD
 
 
 // ============================================
@@ -654,3 +658,5 @@ exports.getReceipt = async (req, res, next) => {
     next(error);
   }
 };
+=======
+>>>>>>> ee17f8b2d265c80fd0bfae13b52e959d1cf8aad9
