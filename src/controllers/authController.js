@@ -362,7 +362,6 @@ exports.updateProfile = async (req, res, next) => {
       success: true,
       message: 'Profile updated successfully',
       data: normalizeUser(user),
-<<<<<<< HEAD
     });
   } catch (error) {
     next(error);
@@ -397,8 +396,6 @@ exports.uploadAvatar = async (req, res, next) => {
       success: true,
       message: 'Profile picture updated',
       data: { avatar: result.secure_url, user: normalizeUser(user) },
-=======
->>>>>>> ee17f8b2d265c80fd0bfae13b52e959d1cf8aad9
     });
   } catch (error) {
     next(error);

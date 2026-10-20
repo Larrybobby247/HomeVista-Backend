@@ -19,10 +19,7 @@ const {
   resetPassword,
   verifyEmail,
   resendVerificationCode,
-<<<<<<< HEAD
   uploadAvatar,
-=======
->>>>>>> ee17f8b2d265c80fd0bfae13b52e959d1cf8aad9
 } = require('../controllers/authController');
 const { protect } = require('../middleware/auth');
 const multer = require('multer');
