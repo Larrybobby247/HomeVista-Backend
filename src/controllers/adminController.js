@@ -7,6 +7,7 @@ const User = require('../models/User');
 const Property = require('../models/Property');
 const Payment = require('../models/Payment');
 const { processSuccessfulPayment } = require('../services/paymentProcessor');
+const { notify } = require('../services/notificationService');
 
 /**
  * @desc    Get dashboard statistics
@@ -305,6 +306,13 @@ exports.approveListing = async (req, res, next) => {
       message: 'Listing approved successfully',
       data: property,
     });
+
+    notify(property.listedBy, {
+      type: 'listing_approved',
+      title: 'Your listing was approved 🎉',
+      message: `"${property.title}" is now live and visible to buyers and renters.`,
+      data: { propertyId: String(property._id), screen: 'property' },
+    });
   } catch (error) {
     next(error);
   }
@@ -338,6 +346,13 @@ exports.rejectListing = async (req, res, next) => {
       message: 'Listing rejected',
       data: property,
     });
+
+    notify(property.listedBy, {
+      type: 'listing_rejected',
+      title: 'Your listing was not approved',
+      message: `"${property.title}" was rejected.\nReason: ${reason && String(reason).trim() ? String(reason).trim() : 'No reason was provided.'}`,
+      data: { propertyId: String(property._id), reason: reason || null, screen: 'property' },
+    });
   } catch (error) {
     next(error);
   }
@@ -351,6 +366,12 @@ exports.rejectListing = async (req, res, next) => {
 exports.setFeatured = async (req, res, next) => {
   try {
     const { featured } = req.body;
+    if (featured) {
+      const existing = await Property.findById(req.params.id).select('status');
+      if (existing && ['sold', 'rented', 'reserved'].includes(existing.status)) {
+        return res.status(400).json({ success: false, message: 'Sold or rented properties cannot be featured' });
+      }
+    }
     const property = await Property.findByIdAndUpdate(
       req.params.id,
       { isFeatured: featured },

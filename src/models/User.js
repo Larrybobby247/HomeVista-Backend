@@ -154,9 +154,35 @@ const userSchema = new mongoose.Schema({
 
   // Bank Details (for payments)
   bankName: { type: String, trim: true },
+  bankCode: { type: String, trim: true },
   accountNumber: { type: String, trim: true },
   accountName: { type: String, trim: true },
   bvn: { type: String, trim: true }, // Bank Verification Number
+  // Paystack subaccount created from the verified bank details above.
+  // Sales are split by Paystack directly into this account.
+  paystackSubaccountCode: { type: String, trim: true },
+  bankVerified: { type: Boolean, default: false },
+
+  // Push notifications (Expo push tokens, one per device)
+  pushTokens: {
+    type: [{
+      token: { type: String, required: true },
+      platform: { type: String },
+      updatedAt: { type: Date, default: Date.now },
+    }],
+    default: [],
+    select: false,
+  },
+
+  // Last known location (used for nearby alerts)
+  lastLocation: {
+    latitude: { type: Number },
+    longitude: { type: Number },
+    updatedAt: { type: Date },
+  },
+
+  // Last time we sent a "new listings" digest to this user
+  lastDigestAt: { type: Date },
 
   // Wallet
   walletBalance: { type: Number, default: 0, min: 0 },
@@ -174,10 +200,17 @@ userSchema.virtual('fullName').get(function() {
   return `${this.firstName} ${this.lastName}`;
 });
 
+// Name shown to the public: business name (companyName, set in Settings) when present,
+// otherwise the person's name
+userSchema.virtual('displayName').get(function() {
+  return (this.companyName && this.companyName.trim()) || `${this.firstName} ${this.lastName}`;
+});
+
 // Index for search
 userSchema.index({ role: 1 });
 userSchema.index({ status: 1 });
 userSchema.index({ firstName: 'text', lastName: 'text', email: 'text' });
+userSchema.index({ 'pushTokens.token': 1 });
 
 // Hash password before saving
 userSchema.pre('save', async function(next) {

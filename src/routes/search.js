@@ -5,6 +5,8 @@
 const express = require('express');
 const router = express.Router();
 const Property = require('../models/Property');
+const { optionalAuth } = require('../middleware/auth');
+const { POSTER_FIELDS, decorate } = require('../utils/propertyHelpers');
 
 // Helper: safely parse numbers
 const toNum = (val) => {
@@ -13,7 +15,7 @@ const toNum = (val) => {
   return isNaN(n) ? undefined : n;
 };
 
-router.post('/', async (req, res, next) => {
+router.post('/', optionalAuth, async (req, res, next) => {
   try {
     const {
       query,
@@ -32,6 +34,13 @@ router.post('/', async (req, res, next) => {
       limit = 20,
     } = req.body;
 
+    // The app sends multi-selects as comma-separated strings ("apartment,house")
+    const toList = (v) =>
+      (Array.isArray(v) ? v : String(v || '').split(','))
+        .flatMap((x) => String(x).split(','))
+        .map((x) => x.trim())
+        .filter(Boolean);
+
     const searchQuery = { verificationStatus: 'verified' };
 
     // Text search
@@ -40,8 +49,8 @@ router.post('/', async (req, res, next) => {
     }
 
     // ====== FIX #1: Case-insensitive property type ======
-    if (propertyType && propertyType.length > 0) {
-      const types = Array.isArray(propertyType) ? propertyType : [propertyType];
+    if (toList(propertyType).length > 0) {
+      const types = toList(propertyType);
       // Use $regex with case-insensitive flag instead of exact $in
       searchQuery.$and = searchQuery.$and || [];
       searchQuery.$and.push({
@@ -52,8 +61,8 @@ router.post('/', async (req, res, next) => {
     }
 
     // ====== FIX #2: Case-insensitive status ======
-    if (status && status.length > 0) {
-      const statuses = Array.isArray(status) ? status : [status];
+    if (toList(status).length > 0) {
+      const statuses = toList(status);
       searchQuery.$and = searchQuery.$and || [];
       searchQuery.$and.push({
         $or: statuses.map(s => ({
@@ -84,8 +93,8 @@ router.post('/', async (req, res, next) => {
     if (city) searchQuery.city = { $regex: city, $options: 'i' };
     if (state) searchQuery.state = { $regex: state, $options: 'i' };
 
-    if (amenities && amenities.length > 0) {
-      const ams = Array.isArray(amenities) ? amenities : [amenities];
+    if (toList(amenities).length > 0) {
+      const ams = toList(amenities);
       searchQuery.amenities = { $all: ams };
     }
 
@@ -106,12 +115,13 @@ router.post('/', async (req, res, next) => {
       popular: { viewCount: -1 },
     };
 
-    const properties = await Property.find(searchQuery)
-      .populate('listedBy', 'firstName lastName email phoneNumber')
+    const found = await Property.find(searchQuery)
+      .populate('listedBy', POSTER_FIELDS)
       .sort(sortOptions[sortBy] || sortOptions.relevance)
       .skip((parseInt(page) - 1) * parseInt(limit))
       .limit(parseInt(limit));
 
+    const properties = await decorate(found, req.user);
     const total = await Property.countDocuments(searchQuery);
 
     console.log(`[SEARCH] Found ${total} total properties\n`);

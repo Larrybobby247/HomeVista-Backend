@@ -14,7 +14,12 @@ const notificationSchema = new mongoose.Schema({
   type: {
     type: String,
     required: true,
-    enum: ['listing_approved', 'listing_rejected', 'payment_received', 'payment_sent', 'inspection_scheduled', 'new_message', 'offer_received', 'offer_accepted', 'offer_rejected', 'verification_required', 'system'],
+    enum: [
+      'listing_approved', 'listing_rejected', 'listing_submitted', 'payment_received', 'payment_sent',
+      'inspection_scheduled', 'new_message', 'new_inquiry', 'offer_received', 'offer_accepted',
+      'offer_rejected', 'verification_required', 'new_listings', 'property_sold', 'payout_setup_needed',
+      'system',
+    ],
   },
   title: {
     type: String,
@@ -26,9 +31,11 @@ const notificationSchema = new mongoose.Schema({
   },
   data: { type: mongoose.Schema.Types.Mixed },
   isRead: { type: Boolean, default: false },
+  pushSent: { type: Boolean, default: false },
+  emailSent: { type: Boolean, default: false },
 }, { timestamps: true });
 
 notificationSchema.index({ userId: 1, isRead: 1 });
-notificationSchema.index({ createdAt: -1 });
+notificationSchema.index({ userId: 1, createdAt: -1 });
 
 module.exports = mongoose.model('Notification', notificationSchema);

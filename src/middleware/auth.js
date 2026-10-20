@@ -84,3 +84,21 @@ exports.authorize = (...roles) => {
     next();
   };
 };
+
+/**
+ * Optional auth - attaches req.user when a valid token is sent, but never blocks.
+ * Used by public routes that personalise their response (e.g. isFavorited flags).
+ */
+exports.optionalAuth = async (req, res, next) => {
+  try {
+    if (req.headers.authorization && req.headers.authorization.startsWith('Bearer')) {
+      const token = req.headers.authorization.split(' ')[1];
+      const accessSecret = process.env.JWT_SECRET || process.env.JWT_ACCESS_SECRET || 'dev-access-secret';
+      const decoded = jwt.verify(token, accessSecret);
+      req.user = await User.findById(decoded.userId);
+    }
+  } catch (e) {
+    // invalid/expired token on a public route: treat as guest
+  }
+  next();
+};

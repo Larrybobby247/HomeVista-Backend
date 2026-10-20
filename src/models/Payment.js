@@ -66,6 +66,15 @@ const paymentSchema = new mongoose.Schema({
   metadata: { type: mongoose.Schema.Types.Mixed },
 
   completedAt: { type: Date },
+  paidAt: { type: Date },
+  channel: { type: String },
+
+  // Paystack split-payment breakdown (sale/rent payments settled straight to the seller)
+  sellerId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+  subaccountCode: { type: String },
+  paystackFee: { type: Number, default: 0 },  // transaction fee charged by Paystack, borne by the seller
+  sellerAmount: { type: Number, default: 0 }, // what the seller actually receives
+  settledBySplit: { type: Boolean, default: false },
 }, { timestamps: true });
 
 

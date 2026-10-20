@@ -17,8 +17,17 @@ const {
   resendResetCode,
   verifyResetCode,
   resetPassword,
+  verifyEmail,
+  resendVerificationCode,
+  uploadAvatar,
 } = require('../controllers/authController');
 const { protect } = require('../middleware/auth');
+const multer = require('multer');
+const avatarUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 8 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => cb(null, /^image\//.test(file.mimetype)),
+});
 
 const registerValidation = [
   body('email').isEmail().normalizeEmail().withMessage('Please provide a valid email'),
@@ -38,10 +47,36 @@ const loginValidation = [
 ];
 
 router.post('/register', registerValidation, register);
+// Email Verification Routes
+router.post(
+  '/verify-email',
+  [
+    body('email')
+      .isEmail()
+      .normalizeEmail()
+      .withMessage('Please provide a valid email'),
+
+    body('code')
+      .isLength({ min: 6, max: 6 })
+      .isNumeric()
+      .withMessage('Verification code must be 6 digits'),
+  ],
+  verifyEmail
+);
+
+router.post(
+  '/verify-email/resend',
+  body('email')
+    .isEmail()
+    .normalizeEmail()
+    .withMessage('Please provide a valid email'),
+  resendVerificationCode
+);
 router.post('/login', loginValidation, login);
 router.post('/logout', protect, logout);
 router.get('/me', protect, getMe);
 router.put('/profile', protect, updateProfile);
+router.post('/avatar', protect, avatarUpload.single('avatar'), uploadAvatar);
 router.post('/change-password', protect, changePassword);
 router.post('/refresh', refreshToken);
 

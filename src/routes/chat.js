@@ -6,11 +6,22 @@ const express = require('express');
 const router = express.Router();
 const { protect } = require('../middleware/auth');
 const { Conversation, Message } = require('../models/Conversation');
+const Property = require('../models/Property');
+const { notify } = require('../services/notificationService');
+
+const PARTICIPANT_FIELDS = 'firstName lastName email avatar companyName phoneNumber role';
+
+// Loads a conversation only if the signed-in user is part of it
+const getMyConversation = async (id, userId) => {
+  const conv = await Conversation.findById(id);
+  if (!conv) return null;
+  return conv.participants.some((p) => String(p) === String(userId)) ? conv : null;
+};
 
 router.get('/conversations', protect, async (req, res, next) => {
   try {
     const conversations = await Conversation.find({ participants: req.user._id })
-      .populate('participants', 'firstName lastName email avatar')
+      .populate('participants', PARTICIPANT_FIELDS)
       .populate('propertyId', 'title images')
       .sort({ updatedAt: -1 })
       .lean();
@@ -56,8 +67,10 @@ router.get('/conversations', protect, async (req, res, next) => {
 
 router.get('/conversations/:id', protect, async (req, res, next) => {
   try {
+    const mine = await getMyConversation(req.params.id, req.user._id);
+    if (!mine) return res.status(404).json({ success: false, message: 'Conversation not found' });
     const conversation = await Conversation.findById(req.params.id)
-      .populate('participants', 'firstName lastName email avatar')
+      .populate('participants', PARTICIPANT_FIELDS)
       .populate('propertyId', 'title images price listedBy')
       .populate({
         path: 'lastMessage',
@@ -77,10 +90,18 @@ router.get('/conversations/:id', protect, async (req, res, next) => {
 router.post('/conversations', protect, async (req, res, next) => {
   try {
     const { userId, propertyId } = req.body;
+    if (!userId || String(userId) === String(req.user._id)) {
+      return res.status(400).json({ success: false, message: 'A valid recipient is required' });
+    }
 
     let conversation = await Conversation.findOne({
       participants: { $all: [req.user._id, userId] },
     });
+
+    if (conversation && propertyId && String(conversation.propertyId || '') !== String(propertyId)) {
+      conversation.propertyId = propertyId;
+      await conversation.save();
+    }
 
     if (!conversation) {
       conversation = await Conversation.create({
@@ -89,7 +110,7 @@ router.post('/conversations', protect, async (req, res, next) => {
       });
     }
 
-    await conversation.populate('participants', 'firstName lastName email avatar');
+    await conversation.populate('participants', PARTICIPANT_FIELDS);
     res.status(200).json({ success: true, data: conversation });
   } catch (error) {
     next(error);
@@ -100,6 +121,9 @@ router.post('/conversations', protect, async (req, res, next) => {
 
 router.get('/conversations/:id/messages', protect, async (req, res, next) => {
   try {
+    if (!(await getMyConversation(req.params.id, req.user._id))) {
+      return res.status(404).json({ success: false, message: 'Conversation not found' });
+    }
     const messages = await Message.find({ conversationId: req.params.id })
       .populate('senderId', 'firstName lastName avatar')
       .sort({ createdAt: -1 })
@@ -114,6 +138,13 @@ router.get('/conversations/:id/messages', protect, async (req, res, next) => {
 router.post('/conversations/:id/messages', protect, async (req, res, next) => {
   try {
     const { content } = req.body;
+    if (!content || !String(content).trim()) {
+      return res.status(400).json({ success: false, message: 'Message cannot be empty' });
+    }
+    const conv = await getMyConversation(req.params.id, req.user._id);
+    if (!conv) return res.status(404).json({ success: false, message: 'Conversation not found' });
+
+    const isFirstMessage = (await Message.countDocuments({ conversationId: conv._id })) === 0;
     const message = await Message.create({
       conversationId: req.params.id,
       senderId: req.user._id,
@@ -121,15 +152,62 @@ router.post('/conversations/:id/messages', protect, async (req, res, next) => {
     });
 
     await Conversation.findByIdAndUpdate(req.params.id, { lastMessage: message._id });
-    await message.populate('senderId', 'firstName lastName avatar');
+    await message.populate('senderId', 'firstName lastName avatar companyName');
 
     res.status(201).json({ success: true, data: message });
+
+    // Notify the other participant (after responding so sending stays fast)
+    const recipientId = conv.participants.find((p) => String(p) !== String(req.user._id));
+    if (recipientId) {
+      const senderName = (req.user.companyName && req.user.companyName.trim()) || `${req.user.firstName} ${req.user.lastName}`;
+      const preview = String(content).trim().slice(0, 120);
+      let property = null;
+      if (conv.propertyId) property = await Property.findById(conv.propertyId).select('title listedBy').lean();
+      const isInquiry = isFirstMessage && property && String(property.listedBy) === String(recipientId);
+
+      notify(recipientId, {
+        type: isInquiry ? 'new_inquiry' : 'new_message',
+        title: isInquiry ? `New inquiry on ${property.title}` : `New message from ${senderName}`,
+        message: isInquiry ? `${senderName}: ${preview}` : preview,
+        data: { conversationId: String(conv._id), propertyId: conv.propertyId ? String(conv.propertyId) : undefined, screen: 'message' },
+      });
+    }
   } catch (error) {
     next(error);
   }
 });
 
-// MARK MESSAGES AS READ
+// Total unread messages (for the Messages tab badge)
+router.get('/unread-count', protect, async (req, res, next) => {
+  try {
+    const convs = await Conversation.find({ participants: req.user._id }).select('_id').lean();
+    const count = await Message.countDocuments({
+      conversationId: { $in: convs.map((c) => c._id) },
+      senderId: { $ne: req.user._id },
+      isRead: false,
+    });
+    res.status(200).json({ success: true, data: { count } });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// MARK MESSAGES AS READ (the app calls POST /conversations/:id/read)
+router.post('/conversations/:conversationId/read', protect, async (req, res, next) => {
+  try {
+    if (!(await getMyConversation(req.params.conversationId, req.user._id))) {
+      return res.status(404).json({ success: false, message: 'Conversation not found' });
+    }
+    await Message.updateMany(
+      { conversationId: req.params.conversationId, senderId: { $ne: req.user._id }, isRead: false },
+      { $set: { isRead: true, readAt: new Date() } }
+    );
+    res.status(200).json({ success: true });
+  } catch (error) {
+    next(error);
+  }
+});
+
 router.patch('/messages/:conversationId/read', protect, async (req, res, next) => {
   try {
     const { conversationId } = req.params;

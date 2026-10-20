@@ -22,6 +22,8 @@ const paymentRoutes = require('./routes/payments');
 const chatRoutes = require('./routes/chat');
 const notificationRoutes = require('./routes/notifications');
 const adminRoutes = require('./routes/admin');
+const userRoutes = require('./routes/users');
+const { startDigestScheduler } = require('./services/digestService');
 
 // Import middleware
 const errorHandler = require('./middleware/errorHandler');
@@ -41,7 +43,7 @@ app.use(helmet());
 app.use(cors({
   origin: process.env.FRONTEND_URL || 'http://localhost:8081',
   credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'],
+  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization'],
 }));
 
@@ -100,7 +102,7 @@ const connectDB = async () => {
   }
 };
 
-connectDB();
+connectDB().then(() => startDigestScheduler());
 
 // ============================================
 // API ROUTES
@@ -123,6 +125,7 @@ app.use('/api/payments', paymentRoutes);
 app.use('/api/chat', chatRoutes);
 app.use('/api/notifications', notificationRoutes);
 app.use('/api/admin', adminRoutes);
+app.use('/api/users', userRoutes);
 
 // ============================================
 // ERROR HANDLING

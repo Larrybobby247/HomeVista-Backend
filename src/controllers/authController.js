@@ -1,5 +1,6 @@
+
 /**
- * HomeVista - Auth Controller
+ * HomeVista - Auth Controller (Fixed)
  * Handles authentication: register, login, logout, profile management,
  * and password reset with email verification codes
  */
@@ -8,7 +9,7 @@ const User = require('../models/User');
 const bcrypt = require('bcryptjs');
 const { generateAccessToken, generateRefreshToken, verifyRefreshToken } = require('../utils/jwt');
 const { validationResult } = require('express-validator');
-const { sendPasswordResetCode } = require('../utils/email');
+const { sendPasswordResetCode, sendSignupVerificationCode} = require('../utils/email');
 
 // ============================================
 // PASSWORD RESET CODE STORAGE
@@ -16,6 +17,7 @@ const { sendPasswordResetCode } = require('../utils/email');
 // In production, replace this with Redis!
 // Format: Map<email, { code, expiresAt, attempts, createdAt }>
 const resetCodes = new Map();
+const verificationCodes = new Map();
 const MAX_ATTEMPTS = 5;
 const CODE_EXPIRY_MS = 15 * 60 * 1000; // 15 minutes
 const RESEND_COOLDOWN_MS = 60 * 1000;  // 60 seconds
@@ -31,10 +33,30 @@ const cleanupExpiredCodes = () => {
       resetCodes.delete(email);
     }
   }
+  for (const [email, data] of verificationCodes.entries()) {
+    if (data.expiresAt < now) {
+      verificationCodes.delete(email);
+    }
+  }
+};
+
+// FIXED: Actually run cleanup every 10 minutes so Maps don't leak memory
+setInterval(cleanupExpiredCodes, 10 * 60 * 1000);
+
+// ============================================
+// HELPER: Normalize user for frontend
+// Backend uses 'isEmailVerified', frontend expects 'isVerified'.
+// ============================================
+const normalizeUser = (userDoc) => {
+  const user = userDoc.toObject ? userDoc.toObject() : { ...userDoc };
+  user.password = undefined;
+  // Ensure frontend gets the field it checks in AuthGate
+  user.isVerified = user.isEmailVerified === true;
+  return user;
 };
 
 // ============================================
-// EXISTING FUNCTIONS (UNCHANGED)
+// EXISTING FUNCTIONS (FIXED)
 // ============================================
 
 /**
@@ -45,6 +67,7 @@ const cleanupExpiredCodes = () => {
 exports.register = async (req, res, next) => {
   try {
     const errors = validationResult(req);
+
     if (!errors.isEmpty()) {
       return res.status(400).json({
         success: false,
@@ -74,7 +97,13 @@ exports.register = async (req, res, next) => {
       });
     }
 
-    const existingUser = await User.findOne({ email: email.toLowerCase() });
+    const normalizedEmail = email.toLowerCase().trim();
+
+    // Check if email already exists
+    const existingUser = await User.findOne({
+      email: normalizedEmail,
+    });
+
     if (existingUser) {
       return res.status(400).json({
         success: false,
@@ -82,7 +111,9 @@ exports.register = async (req, res, next) => {
       });
     }
 
+    // Check if phone already exists
     const existingPhone = await User.findOne({ phoneNumber });
+
     if (existingPhone) {
       return res.status(400).json({
         success: false,
@@ -90,8 +121,12 @@ exports.register = async (req, res, next) => {
       });
     }
 
+    // ============================================
+    // CREATE USER
+    // ============================================
+
     const user = await User.create({
-      email: email.toLowerCase(),
+      email: normalizedEmail,
       password,
       firstName,
       lastName,
@@ -101,25 +136,63 @@ exports.register = async (req, res, next) => {
       city,
       state,
       country: country || 'Nigeria',
+
+      // User must verify email first
       status: 'pending_verification',
+      isEmailVerified: false,
     });
 
-    const accessToken = generateAccessToken(user._id, user.email, user.role);
-    const refreshToken = generateRefreshToken(user._id);
+    // ============================================
+    // GENERATE EMAIL VERIFICATION CODE
+    // ============================================
 
-    user.password = undefined;
+    const verificationCode = generateSixDigitCode();
 
-    res.status(201).json({
+    const expiresAt = Date.now() + CODE_EXPIRY_MS;
+
+    // Store verification code
+    verificationCodes.set(normalizedEmail, {
+      code: verificationCode,
+      expiresAt,
+      attempts: 0,
+      createdAt: Date.now(),
+    });
+
+    // ============================================
+    // SEND VERIFICATION EMAIL (NON-BLOCKING)
+    // ============================================
+    // FIXED: Don't delete the user if email fails. The user can use
+    // "Resend Code" to try again. Deleting the user blocks registration
+    // entirely when the email service is down.
+
+    try {
+      await sendSignupVerificationCode(
+        user.email,
+        verificationCode,
+        user.firstName
+      );
+      console.log(`📧 Verification code sent to ${user.email}`);
+    } catch (emailError) {
+      console.error('Failed to send verification email:', emailError);
+      // Keep the user and code so they can resend. Don't delete anything.
+    }
+
+    // ============================================
+    // RETURN SUCCESS (user created regardless of email status)
+    // ============================================
+
+    return res.status(201).json({
       success: true,
-      message: 'Account created successfully',
+      message: 'Account created successfully. A verification code has been sent to your email.',
       data: {
-        user,
-        accessToken,
-        refreshToken,
-        expiresIn: 604800,
+        user: normalizeUser(user),
+        email: user.email,
+        requiresVerification: true,
       },
     });
+
   } catch (error) {
+    console.error('Register error:', error);
     next(error);
   }
 };
@@ -157,6 +230,17 @@ exports.login = async (req, res, next) => {
       });
     }
 
+    // FIXED: Block login for users who haven't verified their email yet.
+    // If you want to allow login before verification, remove this block.
+    if (user.status === 'pending_verification' || !user.isEmailVerified) {
+      return res.status(403).json({
+        success: false,
+        message: 'Please verify your email before logging in.',
+        requiresVerification: true,
+        email: user.email,
+      });
+    }
+
     const isMatch = await user.comparePassword(password);
     if (!isMatch) {
       return res.status(401).json({
@@ -171,13 +255,11 @@ exports.login = async (req, res, next) => {
     const accessToken = generateAccessToken(user._id, user.email, user.role);
     const refreshToken = generateRefreshToken(user._id);
 
-    user.password = undefined;
-
     res.status(200).json({
       success: true,
       message: 'Login successful',
       data: {
-        user,
+        user: normalizeUser(user),
         accessToken,
         refreshToken,
         expiresIn: 604800,
@@ -214,7 +296,7 @@ exports.getMe = async (req, res, next) => {
     const user = await User.findById(req.user._id);
     res.status(200).json({
       success: true,
-      data: user,
+      data: normalizeUser(user),
     });
   } catch (error) {
     next(error);
@@ -248,9 +330,23 @@ exports.updateProfile = async (req, res, next) => {
       emergencyContactName: req.body.emergencyContactName,
       emergencyContactPhone: req.body.emergencyContactPhone,
       emergencyContactRelationship: req.body.emergencyContactRelationship,
-      notificationPreferences: req.body.notificationPreferences,
       privacySettings: req.body.privacySettings,
     };
+
+    // Merge notification toggles instead of replacing the whole sub-document
+    if (req.body.notificationPreferences && typeof req.body.notificationPreferences === 'object') {
+      Object.entries(req.body.notificationPreferences).forEach(([k, v]) => {
+        if (typeof v === 'boolean') fieldsToUpdate[`notificationPreferences.${k}`] = v;
+      });
+    }
+
+    if (req.body.latitude !== undefined && req.body.longitude !== undefined) {
+      fieldsToUpdate.lastLocation = {
+        latitude: Number(req.body.latitude),
+        longitude: Number(req.body.longitude),
+        updatedAt: new Date(),
+      };
+    }
 
     Object.keys(fieldsToUpdate).forEach(key => {
       if (fieldsToUpdate[key] === undefined) delete fieldsToUpdate[key];
@@ -265,7 +361,41 @@ exports.updateProfile = async (req, res, next) => {
     res.status(200).json({
       success: true,
       message: 'Profile updated successfully',
-      data: user,
+      data: normalizeUser(user),
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * @desc    Upload profile picture
+ * @route   POST /api/auth/avatar  (multipart, field "avatar")
+ * @access  Private
+ */
+exports.uploadAvatar = async (req, res, next) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ success: false, message: 'No image uploaded' });
+    }
+    const cloudinary = require('../config/cloudinary');
+    const result = await new Promise((resolve, reject) => {
+      const stream = cloudinary.uploader.upload_stream(
+        {
+          folder: 'homevista/avatars',
+          resource_type: 'image',
+          transformation: [{ width: 400, height: 400, crop: 'fill', gravity: 'face' }],
+        },
+        (err, r) => (err ? reject(err) : resolve(r))
+      );
+      stream.end(req.file.buffer);
+    });
+
+    const user = await User.findByIdAndUpdate(req.user._id, { avatar: result.secure_url }, { new: true });
+    res.status(200).json({
+      success: true,
+      message: 'Profile picture updated',
+      data: { avatar: result.secure_url, user: normalizeUser(user) },
     });
   } catch (error) {
     next(error);
@@ -402,8 +532,14 @@ exports.forgotPassword = async (req, res, next) => {
       createdAt: Date.now(),
     });
 
-    // Send email
-    await sendPasswordResetCode(user.email, code, user.firstName);
+    // FIXED: Wrap email in try/catch so the code stays in the Map
+    // even if the email service is down.
+    try {
+      await sendPasswordResetCode(user.email, code, user.firstName);
+    } catch (emailError) {
+      console.error('Failed to send password reset email:', emailError);
+      // Don't delete the code — user can try resend later
+    }
 
     res.status(200).json({
       success: true,
@@ -465,7 +601,12 @@ exports.resendResetCode = async (req, res, next) => {
       createdAt: Date.now(),
     });
 
-    await sendPasswordResetCode(user.email, code, user.firstName);
+    // FIXED: Wrap email send
+    try {
+      await sendPasswordResetCode(user.email, code, user.firstName);
+    } catch (emailError) {
+      console.error('Failed to resend password reset email:', emailError);
+    }
 
     res.status(200).json({
       success: true,
@@ -594,9 +735,9 @@ exports.resetPassword = async (req, res, next) => {
       });
     }
 
-    // Hash and save new password
-    const salt = await bcrypt.genSalt(12);
-    user.password = await bcrypt.hash(newPassword, salt);
+    // FIXED: Let the model's pre-save hook handle hashing.
+    // Manually calling bcrypt here double-hashes if the model already hashes on save.
+    user.password = newPassword;
     await user.save();
 
     // Delete used code
@@ -608,6 +749,209 @@ exports.resetPassword = async (req, res, next) => {
     });
   } catch (error) {
     console.error('Reset password error:', error);
+    next(error);
+  }
+};
+
+/**
+ * @desc    Verify user's email
+ * @route   POST /api/auth/verify-email
+ * @access  Public
+ */
+exports.verifyEmail = async (req, res, next) => {
+  try {
+    const errors = validationResult(req);
+
+    if (!errors.isEmpty()) {
+      return res.status(400).json({
+        success: false,
+        message: 'Validation failed',
+        errors: errors.array(),
+      });
+    }
+
+    const { email, code } = req.body;
+
+    const normalizedEmail = email.toLowerCase().trim();
+
+    // Find verification code
+    const verificationData = verificationCodes.get(normalizedEmail);
+
+    if (!verificationData) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid or expired verification code. Please request a new code.',
+      });
+    }
+
+    // Check expiration
+    if (Date.now() > verificationData.expiresAt) {
+      verificationCodes.delete(normalizedEmail);
+
+      return res.status(400).json({
+        success: false,
+        message: 'Verification code has expired. Please request a new code.',
+      });
+    }
+
+    // Check attempts
+    if (verificationData.attempts >= MAX_ATTEMPTS) {
+      verificationCodes.delete(normalizedEmail);
+
+      return res.status(400).json({
+        success: false,
+        message: 'Too many failed attempts. Please request a new code.',
+      });
+    }
+
+    // Check code
+    if (verificationData.code !== code.trim()) {
+      verificationData.attempts += 1;
+
+      return res.status(400).json({
+        success: false,
+        message: `Invalid verification code. ${
+          MAX_ATTEMPTS - verificationData.attempts
+        } attempts remaining.`,
+      });
+    }
+
+    // Find user
+    const user = await User.findOne({
+      email: normalizedEmail,
+    });
+
+    if (!user) {
+      verificationCodes.delete(normalizedEmail);
+
+      return res.status(404).json({
+        success: false,
+        message: 'User not found.',
+      });
+    }
+
+    // Verify email
+    user.isEmailVerified = true;
+    user.status = 'active';
+
+    await user.save();
+
+    // Code has been successfully used
+    verificationCodes.delete(normalizedEmail);
+
+    // Generate tokens AFTER verification
+    const accessToken = generateAccessToken(
+      user._id,
+      user.email,
+      user.role
+    );
+
+    const refreshToken = generateRefreshToken(user._id);
+
+    return res.status(200).json({
+      success: true,
+      message: 'Email verified successfully. Your account is now active.',
+      data: {
+        user: normalizeUser(user),
+        accessToken,
+        refreshToken,
+        expiresIn: 604800,
+      },
+    });
+  } catch (error) {
+    console.error('Verify email error:', error);
+    next(error);
+  }
+};
+
+/**
+ * @desc    Resend email verification code
+ * @route   POST /api/auth/verify-email/resend
+ * @access  Public
+ */
+exports.resendVerificationCode = async (req, res, next) => {
+  try {
+    const errors = validationResult(req);
+
+    if (!errors.isEmpty()) {
+      return res.status(400).json({
+        success: false,
+        message: 'Validation failed',
+        errors: errors.array(),
+      });
+    }
+
+    const { email } = req.body;
+
+    const normalizedEmail = email.toLowerCase().trim();
+
+    // Find user
+    const user = await User.findOne({
+      email: normalizedEmail,
+    });
+
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found.',
+      });
+    }
+
+    // Already verified
+    if (user.isEmailVerified) {
+      return res.status(400).json({
+        success: false,
+        message: 'This email has already been verified.',
+      });
+    }
+
+    // Check resend cooldown
+    const existing = verificationCodes.get(normalizedEmail);
+
+    if (
+      existing &&
+      Date.now() - existing.createdAt < RESEND_COOLDOWN_MS
+    ) {
+      const retryAfter = Math.ceil(
+        (RESEND_COOLDOWN_MS -
+          (Date.now() - existing.createdAt)) /
+          1000
+      );
+
+      return res.status(429).json({
+        success: false,
+        message: `Please wait ${retryAfter} seconds before requesting a new code.`,
+        retryAfter,
+      });
+    }
+
+    // Generate new code
+    const verificationCode = generateSixDigitCode();
+
+    verificationCodes.set(normalizedEmail, {
+      code: verificationCode,
+      expiresAt: Date.now() + CODE_EXPIRY_MS,
+      attempts: 0,
+      createdAt: Date.now(),
+    });
+
+    // FIXED: Wrap email send so the endpoint doesn't crash
+    try {
+      await sendSignupVerificationCode(
+        user.email,
+        verificationCode,
+        user.firstName
+      );
+    } catch (emailError) {
+      console.error('Failed to resend verification email:', emailError);
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: 'A new verification code has been sent to your email.',
+    });
+  } catch (error) {
+    console.error('Resend verification error:', error);
     next(error);
   }
 };
